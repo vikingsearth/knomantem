@@ -1,0 +1,39 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: knomantem
+      POSTGRES_PASSWORD: knomantem
+      POSTGRES_DB: knomantem
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U knomantem"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://knomantem:knomantem@db:5432/knomantem?sslmode=disable
+      JWT_SECRET: dev-secret-key-change-in-production-32chars
+      BLEVE_INDEX_PATH: /data/search.bleve
+      ENV: development
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - blevedata:/data
+
+volumes:
+  pgdata:
+  blevedata:
