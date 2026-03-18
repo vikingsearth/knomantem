@@ -6,8 +6,8 @@ import (
 	"github.com/knomantem/knomantem/pkg/search"
 )
 
-// newIndex creates a temporary BleveSearch for a test.
-func newIndex(t *testing.T) *search.BleveSearch {
+// newIndex creates a temporary BleveIndex for a test.
+func newIndex(t *testing.T) *search.BleveIndex {
 	t.Helper()
 	dir := t.TempDir()
 	idx, err := search.NewBleveIndex(dir)
@@ -41,7 +41,7 @@ func TestNewBleveIndex_OpensExisting(t *testing.T) {
 	_ = idx2.Close()
 }
 
-func TestBleveSearch_IndexAndSearch(t *testing.T) {
+func TestBleveIndex_IndexAndSearch(t *testing.T) {
 	idx := newIndex(t)
 
 	doc := map[string]any{
@@ -71,7 +71,7 @@ func TestBleveSearch_IndexAndSearch(t *testing.T) {
 	}
 }
 
-func TestBleveSearch_EmptyQueryReturnsAll(t *testing.T) {
+func TestBleveIndex_EmptyQueryReturnsAll(t *testing.T) {
 	idx := newIndex(t)
 
 	for _, id := range []string{"a", "b", "c"} {
@@ -97,7 +97,7 @@ func TestBleveSearch_EmptyQueryReturnsAll(t *testing.T) {
 	}
 }
 
-func TestBleveSearch_Delete(t *testing.T) {
+func TestBleveIndex_Delete(t *testing.T) {
 	idx := newIndex(t)
 
 	doc := map[string]any{
@@ -125,13 +125,13 @@ func TestBleveSearch_Delete(t *testing.T) {
 	_ = total
 }
 
-func TestBleveSearch_FilterBySpaceID(t *testing.T) {
+func TestBleveIndex_FilterBySpaceID(t *testing.T) {
 	idx := newIndex(t)
 
 	docs := []map[string]any{
-		{"id": "s1p1", "title": "Page in space A", "content": "alpha content", "space_id": "space-a"},
-		{"id": "s2p1", "title": "Page in space B", "content": "beta content", "space_id": "space-b"},
-		{"id": "s1p2", "title": "Another in A", "content": "more alpha", "space_id": "space-a"},
+		{"id": "s1p1", "title": "Page in space A", "content": "alpha content", "space_id": "spacealpha"},
+		{"id": "s2p1", "title": "Page in space B", "content": "beta content", "space_id": "spacebeta"},
+		{"id": "s1p2", "title": "Another in A", "content": "more alpha", "space_id": "spacealpha"},
 	}
 	for _, d := range docs {
 		if err := idx.Index(d["id"].(string), d); err != nil {
@@ -139,7 +139,7 @@ func TestBleveSearch_FilterBySpaceID(t *testing.T) {
 		}
 	}
 
-	ids, total, _, err := idx.Search("", search.SearchFilters{SpaceID: "space-a"}, "", 0, 10)
+	ids, total, _, err := idx.Search("", search.SearchFilters{SpaceID: "spacealpha"}, "", 0, 10)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -148,12 +148,12 @@ func TestBleveSearch_FilterBySpaceID(t *testing.T) {
 	}
 	for _, id := range ids {
 		if id == "s2p1" {
-			t.Error("space-b document should not appear in space-a filter")
+			t.Error("spacebeta document should not appear in spacealpha filter")
 		}
 	}
 }
 
-func TestBleveSearch_FilterByFreshnessStatus(t *testing.T) {
+func TestBleveIndex_FilterByFreshnessStatus(t *testing.T) {
 	idx := newIndex(t)
 
 	docs := []map[string]any{
@@ -179,7 +179,7 @@ func TestBleveSearch_FilterByFreshnessStatus(t *testing.T) {
 	}
 }
 
-func TestBleveSearch_Pagination(t *testing.T) {
+func TestBleveIndex_Pagination(t *testing.T) {
 	idx := newIndex(t)
 
 	for i := 0; i < 5; i++ {
@@ -227,7 +227,7 @@ func TestBleveSearch_Pagination(t *testing.T) {
 	}
 }
 
-func TestBleveSearch_FacetsReturned(t *testing.T) {
+func TestBleveIndex_FacetsReturned(t *testing.T) {
 	idx := newIndex(t)
 
 	docs := []map[string]any{
@@ -257,7 +257,7 @@ func TestBleveSearch_FacetsReturned(t *testing.T) {
 	}
 }
 
-func TestBleveSearch_Rebuild(t *testing.T) {
+func TestBleveIndex_Rebuild(t *testing.T) {
 	dir := t.TempDir()
 	idx, err := search.NewBleveIndex(dir)
 	if err != nil {
@@ -305,7 +305,7 @@ func TestBleveSearch_Rebuild(t *testing.T) {
 	_ = ids2
 }
 
-func TestBleveSearch_IndexEmptyIDError(t *testing.T) {
+func TestBleveIndex_IndexEmptyIDError(t *testing.T) {
 	idx := newIndex(t)
 	err := idx.Index("", map[string]any{"title": "no id"})
 	if err == nil {
@@ -313,7 +313,7 @@ func TestBleveSearch_IndexEmptyIDError(t *testing.T) {
 	}
 }
 
-func TestBleveSearch_TitleBoosted(t *testing.T) {
+func TestBleveIndex_TitleBoosted(t *testing.T) {
 	idx := newIndex(t)
 
 	// "golang" only in title of doc-1, only in content of doc-2

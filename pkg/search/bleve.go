@@ -4,6 +4,8 @@ package search
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -15,26 +17,153 @@ import (
 
 // BleveIndex wraps a bleve.Index and provides search operations.
 type BleveIndex struct {
-	index bleve.Index
+	index   bleve.Index
+	idxPath string
 }
 
 // NewBleveIndex opens (or creates) the Bleve index at the given path.
-// If the path does not exist a new index is created.
+// A subdirectory "index.bleve" is used inside path so that TempDir works.
 func NewBleveIndex(path string) (*BleveIndex, error) {
-	index, err := bleve.Open(path)
-	if err == bleve.ErrorIndexPathDoesNotExist {
-		mapping := bleve.NewIndexMapping()
-		index, err = bleve.New(path, mapping)
-	}
+	idxPath := filepath.Join(path, "index.bleve")
+	index, err := bleve.Open(idxPath)
 	if err != nil {
-		return nil, fmt.Errorf("bleve: open index at %s: %w", path, err)
+		mapping := bleve.NewIndexMapping()
+		index, err = bleve.New(idxPath, mapping)
+		if err != nil {
+			return nil, fmt.Errorf("bleve: create index at %s: %w", idxPath, err)
+		}
 	}
-	return &BleveIndex{index: index}, nil
+	return &BleveIndex{index: index, idxPath: idxPath}, nil
 }
 
 // Close closes the underlying Bleve index.
 func (b *BleveIndex) Close() error {
 	return b.index.Close()
+}
+
+// SearchFilters carries optional filter values for direct searches.
+type SearchFilters struct {
+	SpaceID         string
+	Tags            []string
+	FreshnessStatus string
+	DateFrom        string
+	DateTo          string
+}
+
+// FacetCount is a single bucket in a facet result.
+type FacetCount struct {
+	Name  string
+	Count int
+}
+
+// Index adds or updates a document in the search index by ID.
+func (b *BleveIndex) Index(id string, doc map[string]any) error {
+	if id == "" {
+		return fmt.Errorf("bleve index: id must not be empty")
+	}
+	return b.index.Index(id, doc)
+}
+
+// Delete removes a document from the search index by ID.
+func (b *BleveIndex) Delete(id string) error {
+	return b.index.Delete(id)
+}
+
+// Search executes a full-text query with optional filters and returns IDs, total, facets.
+func (b *BleveIndex) Search(queryStr string, filters SearchFilters, sortBy string, from, size int) ([]string, uint64, map[string][]FacetCount, error) {
+	var baseQ *bleve.SearchRequest
+
+	if strings.TrimSpace(queryStr) == "" {
+		baseQ = bleve.NewSearchRequestOptions(bleve.NewMatchAllQuery(), size, from, false)
+	} else {
+		// Build conjunction: text query + filters
+		mq := bleve.NewMatchQuery(queryStr)
+		if filters.SpaceID == "" && filters.FreshnessStatus == "" {
+			baseQ = bleve.NewSearchRequestOptions(mq, size, from, false)
+		} else {
+			cq := bleve.NewConjunctionQuery(mq)
+			if filters.SpaceID != "" {
+				tq := bleve.NewMatchPhraseQuery(filters.SpaceID)
+				tq.SetField("space_id")
+				cq.AddQuery(tq)
+			}
+			if filters.FreshnessStatus != "" {
+				tq := bleve.NewMatchPhraseQuery(filters.FreshnessStatus)
+				tq.SetField("freshness_status")
+				cq.AddQuery(tq)
+			}
+			baseQ = bleve.NewSearchRequestOptions(cq, size, from, false)
+		}
+	}
+
+	// Handle filter-only (no text query)
+	if strings.TrimSpace(queryStr) == "" && (filters.SpaceID != "" || filters.FreshnessStatus != "") {
+		cq := bleve.NewConjunctionQuery(bleve.NewMatchAllQuery())
+		if filters.SpaceID != "" {
+			tq := bleve.NewMatchPhraseQuery(filters.SpaceID)
+			tq.SetField("space_id")
+			cq.AddQuery(tq)
+		}
+		if filters.FreshnessStatus != "" {
+			tq := bleve.NewMatchPhraseQuery(filters.FreshnessStatus)
+			tq.SetField("freshness_status")
+			cq.AddQuery(tq)
+		}
+		baseQ = bleve.NewSearchRequestOptions(cq, size, from, false)
+	}
+
+	req := baseQ
+	req.Fields = []string{"*"}
+	req.AddFacet("space_id", bleve.NewFacetRequest("space_id", 20))
+	req.AddFacet("freshness_status", bleve.NewFacetRequest("freshness_status", 10))
+	req.AddFacet("tags", bleve.NewFacetRequest("tags", 50))
+
+	result, err := b.index.Search(req)
+	if err != nil {
+		return nil, 0, nil, fmt.Errorf("bleve search: %w", err)
+	}
+
+	ids := make([]string, 0, len(result.Hits))
+	for _, hit := range result.Hits {
+		ids = append(ids, hit.ID)
+	}
+
+	facets := make(map[string][]FacetCount)
+	for name, fr := range result.Facets {
+		if fr.Terms != nil {
+			for _, t := range fr.Terms.Terms() {
+				facets[name] = append(facets[name], FacetCount{Name: t.Term, Count: t.Count})
+			}
+		}
+	}
+
+	return ids, result.Total, facets, nil
+}
+
+// Rebuild closes the current index, deletes it, creates a fresh one, and indexes the provided documents.
+func (b *BleveIndex) Rebuild(docs []map[string]any) error {
+	if err := b.index.Close(); err != nil {
+		return fmt.Errorf("bleve rebuild: close: %w", err)
+	}
+	if err := os.RemoveAll(b.idxPath); err != nil {
+		return fmt.Errorf("bleve rebuild: remove: %w", err)
+	}
+	mapping := bleve.NewIndexMapping()
+	idx, err := bleve.New(b.idxPath, mapping)
+	if err != nil {
+		return fmt.Errorf("bleve rebuild: create: %w", err)
+	}
+	b.index = idx
+
+	batch := idx.NewBatch()
+	for _, doc := range docs {
+		id, _ := doc["id"].(string)
+		if id == "" {
+			continue
+		}
+		batch.Index(id, doc)
+	}
+	return idx.Batch(batch)
 }
 
 // pageDoc is the document structure stored in the Bleve index.
