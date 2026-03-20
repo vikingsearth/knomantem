@@ -169,6 +169,12 @@ class _Sidebar extends ConsumerWidget {
                     )),
             ],
           ),
+          _SidebarSection(
+            title: 'TOOLS',
+            children: [
+              _KnowledgeHealthNavTile(ref: ref),
+            ],
+          ),
         ],
       ),
     );
@@ -255,6 +261,10 @@ class _MainContent extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final staleCount = freshnessState.pages
+        .where((p) => p.status == FreshnessStatus.stale)
+        .length;
+
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
       child: Column(
@@ -264,7 +274,46 @@ class _MainContent extends ConsumerWidget {
           const SizedBox(height: 12),
           _RecentPagesPlaceholder(),
           const SizedBox(height: 24),
-          _SectionTitle('Freshness Alerts'),
+          Row(
+            children: [
+              _SectionTitle('Freshness Alerts'),
+              if (staleCount > 0) ...[
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 7, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF8B3A3A),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    '$staleCount',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+              const Spacer(),
+              if (staleCount > 0)
+                TextButton(
+                  onPressed: () =>
+                      context.push('/freshness?filter=stale'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: const Color(0xFF5A8A48),
+                    padding: EdgeInsets.zero,
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: const Text(
+                    'View all →',
+                    style: TextStyle(fontSize: 13),
+                  ),
+                ),
+            ],
+          ),
           const SizedBox(height: 12),
           _FreshnessAlerts(freshnessState: freshnessState, ref: ref),
         ],
@@ -306,6 +355,52 @@ class _RecentPagesPlaceholder extends StatelessWidget {
     );
   }
 }
+
+// ─── Knowledge Health Sidebar Tile ───────────────────────────────────────────
+
+class _KnowledgeHealthNavTile extends StatelessWidget {
+  final WidgetRef ref;
+
+  const _KnowledgeHealthNavTile({required this.ref});
+
+  @override
+  Widget build(BuildContext context) {
+    final freshnessState = ref.watch(freshnessDashboardProvider);
+    final staleCount = freshnessState.pages
+        .where((p) => p.status == FreshnessStatus.stale)
+        .length;
+
+    return ListTile(
+      dense: true,
+      leading: const Icon(Icons.monitor_heart_outlined, size: 18),
+      title: const Text(
+        'Knowledge Health',
+        style: TextStyle(fontSize: 14),
+        overflow: TextOverflow.ellipsis,
+      ),
+      trailing: staleCount > 0
+          ? Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: const Color(0xFF8B3A3A),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(
+                '$staleCount',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            )
+          : null,
+      onTap: () => context.push('/freshness'),
+    );
+  }
+}
+
+// ─── Freshness Alerts Panel ───────────────────────────────────────────────────
 
 class _FreshnessAlerts extends StatelessWidget {
   final FreshnessDashboardState freshnessState;

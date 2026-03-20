@@ -8,6 +8,7 @@ import 'screens/space_screen.dart';
 import 'screens/page_editor_screen.dart';
 import 'screens/search_screen.dart';
 import 'screens/graph_screen.dart';
+import 'screens/freshness_dashboard_screen.dart';
 
 final routerProvider = Provider<GoRouter>((ref) {
   final authNotifier = ref.watch(authProvider.notifier);
@@ -74,6 +75,14 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (context, state) {
           final rootId = state.uri.queryParameters['root'];
           return GraphScreen(rootPageId: rootId);
+        },
+      ),
+      GoRoute(
+        path: '/freshness',
+        name: 'freshness',
+        builder: (context, state) {
+          final filter = state.uri.queryParameters['filter'];
+          return FreshnessDashboardScreen(initialFilter: filter);
         },
       ),
     ],
