@@ -1,10 +1,33 @@
 import 'dart:math' as math;
-import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
-import '../models/edge.dart';
-import '../models/freshness.dart';
 
-/// A force-directed graph visualization using CustomPainter.
+import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:graphview/graphview.dart' as gv;
+
+import '../models/edge.dart';
+
+// ---------------------------------------------------------------------------
+// Colour palette (forest / knowledge graph theme)
+// ---------------------------------------------------------------------------
+const _kBg = Color(0xFF141A12);
+const _kFresh = Color(0xFF5A8A48);
+const _kAging = Color(0xFFB8860B);
+const _kStale = Color(0xFF8B3A3A);
+const _kUnknown = Color(0xFF3A4A30);
+const _kRootRing = Color(0xFF9BBF7E);
+const _kEdgeRef = Color(0xFF3A5030);
+const _kEdgeDepends = Color(0xFF8B6914);
+const _kEdgeSuper = Color(0xFF6B3A8B);
+const _kEdgeRelated = Color(0xFF4A6040);
+
+const _kNodeRadius = 28.0;
+const _kRootRadius = 36.0;
+const _kMaxRenderNodes = 100;
+
+// ---------------------------------------------------------------------------
+// Public widget — named GraphView so graph_screen.dart needs no changes.
+// Internally we use the `graphview` package with a `gv.` prefix.
+// ---------------------------------------------------------------------------
 class GraphView extends StatefulWidget {
   final GraphData data;
   final String? rootId;
@@ -21,330 +44,275 @@ class GraphView extends StatefulWidget {
   State<GraphView> createState() => _GraphViewState();
 }
 
-class _GraphViewState extends State<GraphView>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
-  late List<_NodeState> _nodes;
-  late List<GraphEdge> _edges;
+class _GraphViewState extends State<GraphView> {
+  late gv.Graph _graph;
+  late gv.Algorithm _algorithm;
 
-  // Viewport transform
-  double _scale = 1.0;
-  Offset _pan = Offset.zero;
+  // Maps from our model IDs to graphview Node objects and back.
+  final Map<String, gv.Node> _nodeMap = {};
+  final Map<int, String> _keyToId = {};
 
-  // Dragging state
-  String? _draggingNodeId;
-  Offset? _dragStart;
-  Offset? _dragNodeStart;
+  // Hovered node id for tooltip.
+  String? _hoveredId;
 
-  // Tooltip
-  String? _hoveredNodeId;
+  // Whether we are rendering a truncated view (>kMaxRenderNodes).
+  bool _isTruncated = false;
 
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 30),
-    );
-    _initGraph();
-    _controller.addListener(_tickPhysics);
-    _controller.forward();
+    _buildGraph();
   }
 
   @override
   void didUpdateWidget(GraphView old) {
     super.didUpdateWidget(old);
     if (old.data != widget.data) {
-      _initGraph();
+      _buildGraph();
     }
   }
 
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
+  void _buildGraph() {
+    _nodeMap.clear();
+    _keyToId.clear();
 
-  void _initGraph() {
-    final rng = math.Random(42);
-    _nodes = widget.data.nodes.map((n) {
-      final isRoot = n.id == widget.rootId;
-      return _NodeState(
-        node: n,
-        x: rng.nextDouble() * 600 - 300,
-        y: rng.nextDouble() * 400 - 200,
-        vx: 0,
-        vy: 0,
-        isRoot: isRoot,
-      );
-    }).toList();
-    _edges = widget.data.edges;
+    final allNodes = widget.data.nodes;
+    _isTruncated = allNodes.length > _kMaxRenderNodes;
+    final renderNodes = _isTruncated
+        ? _prioritisedNodes(allNodes, widget.rootId)
+        : allNodes;
+    final renderIds = {for (final n in renderNodes) n.id};
 
-    // Center root
-    if (widget.rootId != null) {
-      final rootIdx = _nodes.indexWhere((n) => n.node.id == widget.rootId);
-      if (rootIdx >= 0) {
-        _nodes[rootIdx] = _nodes[rootIdx].copyWith(x: 0, y: 0);
+    final graph = gv.Graph()..isTree = false;
+
+    for (final node in renderNodes) {
+      final gvNode = gv.Node.Id(node.id);
+      _nodeMap[node.id] = gvNode;
+      _keyToId[node.id.hashCode] = node.id;
+    }
+
+    for (final edge in widget.data.edges) {
+      if (!renderIds.contains(edge.sourceId) ||
+          !renderIds.contains(edge.targetId)) {
+        continue;
       }
-    }
-  }
-
-  void _tickPhysics() {
-    if (_draggingNodeId != null) return;
-
-    const repulsion = 8000.0;
-    const springK = 0.08;
-    const restLen = 120.0;
-    const damping = 0.85;
-
-    final n = _nodes.length;
-    List<double> fx = List.filled(n, 0);
-    List<double> fy = List.filled(n, 0);
-
-    // Repulsion between all node pairs
-    for (int i = 0; i < n; i++) {
-      for (int j = i + 1; j < n; j++) {
-        final dx = _nodes[i].x - _nodes[j].x;
-        final dy = _nodes[i].y - _nodes[j].y;
-        final dist = math.sqrt(dx * dx + dy * dy).clamp(1.0, 1000.0);
-        final force = repulsion / (dist * dist);
-        final fx_ = force * dx / dist;
-        final fy_ = force * dy / dist;
-        fx[i] += fx_;
-        fy[i] += fy_;
-        fx[j] -= fx_;
-        fy[j] -= fy_;
+      final src = _nodeMap[edge.sourceId];
+      final tgt = _nodeMap[edge.targetId];
+      if (src != null && tgt != null) {
+        graph.addEdge(src, tgt,
+            paint: _edgePaint(edge.edgeType));
       }
     }
 
-    // Spring forces for edges
-    for (final edge in _edges) {
-      final si = _nodes.indexWhere((n) => n.node.id == edge.sourceId);
-      final ti = _nodes.indexWhere((n) => n.node.id == edge.targetId);
-      if (si < 0 || ti < 0) continue;
-      final dx = _nodes[ti].x - _nodes[si].x;
-      final dy = _nodes[ti].y - _nodes[si].y;
-      final dist = math.sqrt(dx * dx + dy * dy).clamp(1.0, 1000.0);
-      final force = springK * (dist - restLen);
-      final fx_ = force * dx / dist;
-      final fy_ = force * dy / dist;
-      fx[si] += fx_;
-      fy[si] += fy_;
-      fx[ti] -= fx_;
-      fy[ti] -= fy_;
+    // Add any isolated nodes (no edges yet).
+    for (final node in renderNodes) {
+      final gvNode = _nodeMap[node.id]!;
+      if (!graph.nodes.contains(gvNode)) {
+        graph.addNode(gvNode);
+      }
     }
 
-    // Gravity toward center
-    for (int i = 0; i < n; i++) {
-      fx[i] -= _nodes[i].x * 0.01;
-      fy[i] -= _nodes[i].y * 0.01;
-    }
+    final algorithm = gv.FruchtermanReingoldAlgorithm(iterations: 1000);
 
-    // Integrate
     setState(() {
-      for (int i = 0; i < n; i++) {
-        final node = _nodes[i];
-        final newVx = (node.vx + fx[i]) * damping;
-        final newVy = (node.vy + fy[i]) * damping;
-        _nodes[i] = node.copyWith(
-          x: node.x + newVx,
-          y: node.y + newVy,
-          vx: newVx,
-          vy: newVy,
-        );
-      }
+      _graph = graph;
+      _algorithm = algorithm;
     });
   }
 
-  Offset _worldToScreen(Size size, double x, double y) {
-    return Offset(
-      size.width / 2 + (x + _pan.dx) * _scale,
-      size.height / 2 + (y + _pan.dy) * _scale,
-    );
+  /// When we must truncate, prefer the root and its closest neighbours.
+  List<GraphNode> _prioritisedNodes(List<GraphNode> all, String? rootId) {
+    final sorted = List<GraphNode>.from(all)
+      ..sort((a, b) {
+        // Root first, then by depth, then by connection count descending.
+        if (a.id == rootId) return -1;
+        if (b.id == rootId) return 1;
+        final depthCmp = a.depthFromRoot.compareTo(b.depthFromRoot);
+        if (depthCmp != 0) return depthCmp;
+        return b.connectionCount.compareTo(a.connectionCount);
+      });
+    return sorted.take(_kMaxRenderNodes).toList();
   }
 
-  Offset _screenToWorld(Size size, Offset screen) {
-    return Offset(
-      (screen.dx - size.width / 2) / _scale - _pan.dx,
-      (screen.dy - size.height / 2) / _scale - _pan.dy,
-    );
+  Paint _edgePaint(String type) {
+    Color color;
+    switch (type) {
+      case 'depends_on':
+        color = _kEdgeDepends;
+        break;
+      case 'supersedes':
+        color = _kEdgeSuper;
+        break;
+      case 'related_to':
+      case 'related':
+        color = _kEdgeRelated;
+        break;
+      default:
+        color = _kEdgeRef;
+    }
+    return Paint()
+      ..color = color
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke;
   }
 
-  String? _nodeAt(Size size, Offset screen) {
-    for (final node in _nodes) {
-      final pos = _worldToScreen(size, node.x, node.y);
-      final r = _nodeRadius(node.node) * _scale;
-      final d = (screen - pos).distance;
-      if (d <= r) return node.node.id;
+  GraphNode? _nodeById(String id) {
+    for (final n in widget.data.nodes) {
+      if (n.id == id) return n;
     }
     return null;
   }
 
-  double _nodeRadius(GraphNode node) {
-    final base = 20.0 +
-        (node.connectionCount.clamp(0, 20) / 20.0) * 20.0;
-    return node.id == widget.rootId ? base + 8 : base;
-  }
-
-  void _fitToScreen(Size size) {
-    if (_nodes.isEmpty) return;
-    double minX = _nodes.first.x,
-        maxX = _nodes.first.x,
-        minY = _nodes.first.y,
-        maxY = _nodes.first.y;
-    for (final n in _nodes) {
-      if (n.x < minX) minX = n.x;
-      if (n.x > maxX) maxX = n.x;
-      if (n.y < minY) minY = n.y;
-      if (n.y > maxY) maxY = n.y;
+  @override
+  Widget build(BuildContext context) {
+    if (widget.data.nodes.isEmpty) {
+      return _EmptyState();
     }
-    final cx = (minX + maxX) / 2;
-    final cy = (minY + maxY) / 2;
-    final w = (maxX - minX + 100).clamp(1.0, double.infinity);
-    final h = (maxY - minY + 100).clamp(1.0, double.infinity);
-    final s =
-        math.min(size.width / w, size.height / h).clamp(0.2, 2.0);
-    setState(() {
-      _scale = s;
-      _pan = Offset(-cx, -cy);
-    });
+
+    return Stack(
+      children: [
+        // Dark background fills the entire allocated space.
+        Positioned.fill(
+          child: ColoredBox(color: _kBg),
+        ),
+
+        // Truncation warning banner.
+        if (_isTruncated)
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: _TruncationBanner(
+              rendered: _kMaxRenderNodes,
+              total: widget.data.totalNodes,
+            ),
+          ),
+
+        // Main graph canvas.
+        Positioned.fill(
+          child: RepaintBoundary(
+            child: InteractiveViewer(
+              constrained: false,
+              boundaryMargin: const EdgeInsets.all(double.infinity),
+              minScale: 0.05,
+              maxScale: 4.0,
+              child: gv.GraphView(
+                graph: _graph,
+                algorithm: _algorithm,
+                paint: Paint()
+                  ..color = _kEdgeRef
+                  ..strokeWidth = 1.5
+                  ..style = PaintingStyle.stroke,
+                builder: (gv.Node gvNode) {
+                  // Resolve our model node from the graphview node id.
+                  final nodeId = gvNode.key?.value as String?;
+                  if (nodeId == null) return const SizedBox(width: 56, height: 56);
+                  final modelNode = _nodeById(nodeId);
+                  if (modelNode == null) return const SizedBox(width: 56, height: 56);
+                  final isRoot = nodeId == widget.rootId;
+                  return _NodeWidget(
+                    node: modelNode,
+                    isRoot: isRoot,
+                    isHovered: _hoveredId == nodeId,
+                    onTap: () => widget.onNodeTap?.call(nodeId),
+                    onHover: (entered) {
+                      setState(() {
+                        _hoveredId = entered ? nodeId : null;
+                      });
+                    },
+                  );
+                },
+              ),
+            ),
+          ),
+        ),
+
+        // Legend — bottom-left.
+        const Positioned(
+          left: 16,
+          bottom: 16,
+          child: _GraphLegend(),
+        ),
+      ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Individual node widget
+// ---------------------------------------------------------------------------
+class _NodeWidget extends StatelessWidget {
+  final GraphNode node;
+  final bool isRoot;
+  final bool isHovered;
+  final VoidCallback onTap;
+  final ValueChanged<bool> onHover;
+
+  const _NodeWidget({
+    required this.node,
+    required this.isRoot,
+    required this.isHovered,
+    required this.onTap,
+    required this.onHover,
+  });
+
+  Color get _fillColor {
+    switch (node.freshnessStatus) {
+      case 'fresh':
+        return _kFresh;
+      case 'aging':
+        return _kAging;
+      case 'stale':
+        return _kStale;
+      default:
+        return _kUnknown;
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(builder: (context, constraints) {
-      final size = Size(constraints.maxWidth, constraints.maxHeight);
-      return Stack(
-        children: [
-          // Graph canvas
-          Listener(
-            onPointerSignal: (event) {
-              if (event is PointerScrollEvent) {
-                setState(() {
-                  _scale =
-                      (_scale * (event.scrollDelta.dy > 0 ? 0.9 : 1.1))
-                          .clamp(0.1, 5.0);
-                });
-              }
-            },
-            child: GestureDetector(
-              onPanStart: (details) {
-                final nodeId = _nodeAt(size, details.localPosition);
-                if (nodeId != null) {
-                  setState(() => _draggingNodeId = nodeId);
-                  _dragStart = details.localPosition;
-                  final ni = _nodes.indexWhere((n) => n.node.id == nodeId);
-                  _dragNodeStart = Offset(_nodes[ni].x, _nodes[ni].y);
-                }
-              },
-              onPanUpdate: (details) {
-                if (_draggingNodeId != null) {
-                  // Drag node
-                  final ni = _nodes
-                      .indexWhere((n) => n.node.id == _draggingNodeId);
-                  if (ni >= 0) {
-                    final world = _screenToWorld(size, details.localPosition);
-                    setState(() {
-                      _nodes[ni] = _nodes[ni]
-                          .copyWith(x: world.dx, y: world.dy, vx: 0, vy: 0);
-                    });
-                  }
-                } else {
-                  // Pan viewport
-                  setState(() {
-                    _pan += details.delta / _scale;
-                  });
-                }
-              },
-              onPanEnd: (_) {
-                setState(() => _draggingNodeId = null);
-              },
-              onTapUp: (details) {
-                final nodeId = _nodeAt(size, details.localPosition);
-                if (nodeId != null) {
-                  widget.onNodeTap?.call(nodeId);
-                }
-              },
-              child: MouseRegion(
-                onHover: (event) {
-                  final nodeId = _nodeAt(size, event.localPosition);
-                  if (nodeId != _hoveredNodeId) {
-                    setState(() => _hoveredNodeId = nodeId);
-                  }
-                },
-                onExit: (_) => setState(() => _hoveredNodeId = null),
-                child: CustomPaint(
-                  size: size,
-                  painter: _GraphPainter(
-                    nodes: _nodes,
-                    edges: _edges,
-                    rootId: widget.rootId,
-                    scale: _scale,
-                    pan: _pan,
-                    hoveredNodeId: _hoveredNodeId,
-                    nodeRadius: _nodeRadius,
-                  ),
-                ),
-              ),
-            ),
-          ),
-          // Fit button
-          Positioned(
-            right: 16,
-            bottom: 16,
-            child: FloatingActionButton.small(
-              onPressed: () => _fitToScreen(size),
-              tooltip: 'Fit to screen',
-              child: const Icon(Icons.fit_screen),
-            ),
-          ),
-          // Tooltip overlay
-          if (_hoveredNodeId != null)
-            _buildTooltip(size, _hoveredNodeId!),
-        ],
-      );
-    });
-  }
+    final radius = isRoot ? _kRootRadius : _kNodeRadius;
+    final diameter = radius * 2;
+    final fill = _fillColor;
+    final borderColor = Color.lerp(fill, Colors.white, 0.25) ?? fill;
 
-  Widget _buildTooltip(Size size, String nodeId) {
-    final ni = _nodes.indexWhere((n) => n.node.id == nodeId);
-    if (ni < 0) return const SizedBox.shrink();
-    final node = _nodes[ni];
-    final pos = _worldToScreen(size, node.x, node.y);
-    return Positioned(
-      left: (pos.dx + 20).clamp(0, size.width - 200),
-      top: (pos.dy - 60).clamp(0, size.height - 80),
-      child: IgnorePointer(
-        child: Container(
-          constraints: const BoxConstraints(maxWidth: 200),
-          padding: const EdgeInsets.all(8),
+    // Truncate label.
+    const maxChars = 20;
+    final label = node.title.length > maxChars
+        ? '${node.title.substring(0, maxChars)}…'
+        : node.title;
+
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => onHover(true),
+      onExit: (_) => onHover(false),
+      child: GestureDetector(
+        onTap: onTap,
+        child: Tooltip(
+          message: '${node.title}\n'
+              'Status: ${node.freshnessStatus}\n'
+              'Connections: ${node.connectionCount}',
           decoration: BoxDecoration(
-            color: Colors.black87,
+            color: const Color(0xDD1E2A1A),
             borderRadius: BorderRadius.circular(6),
           ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                node.node.title,
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 12),
+          textStyle: GoogleFonts.jetBrainsMono(
+            fontSize: 11,
+            color: Colors.white70,
+          ),
+          child: SizedBox(
+            width: diameter + (isHovered ? 8 : 0),
+            height: diameter + (isHovered ? 8 : 0),
+            child: CustomPaint(
+              painter: _NodePainter(
+                radius: radius,
+                fill: fill,
+                border: borderColor,
+                isRoot: isRoot,
+                isHovered: isHovered,
+                label: label,
               ),
-              const SizedBox(height: 2),
-              Text(
-                'Freshness: ${node.node.freshnessStatus}',
-                style:
-                    const TextStyle(color: Colors.white70, fontSize: 11),
-              ),
-              Text(
-                'Connections: ${node.node.connectionCount}',
-                style:
-                    const TextStyle(color: Colors.white70, fontSize: 11),
-              ),
-            ],
+            ),
           ),
         ),
       ),
@@ -352,204 +320,339 @@ class _GraphViewState extends State<GraphView>
   }
 }
 
-class _GraphPainter extends CustomPainter {
-  final List<_NodeState> nodes;
-  final List<GraphEdge> edges;
-  final String? rootId;
-  final double scale;
-  final Offset pan;
-  final String? hoveredNodeId;
-  final double Function(GraphNode) nodeRadius;
+// ---------------------------------------------------------------------------
+// Node CustomPainter
+// ---------------------------------------------------------------------------
+class _NodePainter extends CustomPainter {
+  final double radius;
+  final Color fill;
+  final Color border;
+  final bool isRoot;
+  final bool isHovered;
+  final String label;
 
-  _GraphPainter({
-    required this.nodes,
-    required this.edges,
-    this.rootId,
-    required this.scale,
-    required this.pan,
-    this.hoveredNodeId,
-    required this.nodeRadius,
+  const _NodePainter({
+    required this.radius,
+    required this.fill,
+    required this.border,
+    required this.isRoot,
+    required this.isHovered,
+    required this.label,
   });
-
-  Offset _toScreen(Size size, double x, double y) {
-    return Offset(
-      size.width / 2 + (x + pan.dx) * scale,
-      size.height / 2 + (y + pan.dy) * scale,
-    );
-  }
-
-  Color _freshnessColor(String status) {
-    switch (status) {
-      case 'aging':
-        return const Color(0xFFF59E0B);
-      case 'stale':
-        return const Color(0xFFEF4444);
-      default:
-        return const Color(0xFF10B981);
-    }
-  }
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Draw background
-    canvas.drawRect(
-      Rect.fromLTWH(0, 0, size.width, size.height),
-      Paint()..color = Colors.white,
+    final center = Offset(size.width / 2, size.height / 2);
+
+    // Glow / shadow for root or hovered.
+    if (isRoot || isHovered) {
+      final glowColor =
+          isRoot ? _kRootRing.withOpacity(0.35) : fill.withOpacity(0.25);
+      canvas.drawCircle(
+        center,
+        radius + 6,
+        Paint()
+          ..color = glowColor
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
+      );
+    }
+
+    // Root ring (bright sage halo).
+    if (isRoot) {
+      canvas.drawCircle(
+        center,
+        radius + 4,
+        Paint()
+          ..color = _kRootRing
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.5,
+      );
+    }
+
+    // Fill circle — slightly transparent so edges behind are visible.
+    canvas.drawCircle(
+      center,
+      radius,
+      Paint()..color = fill.withOpacity(0.82),
     );
 
-    final edgePaint = Paint()
-      ..color = const Color(0xFF9CA3AF)
-      ..strokeWidth = 1.5 * scale
-      ..style = PaintingStyle.stroke;
+    // Border.
+    canvas.drawCircle(
+      center,
+      radius,
+      Paint()
+        ..color = border
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0,
+    );
 
-    final dependsPaint = Paint()
-      ..color = const Color(0xFF9CA3AF)
-      ..strokeWidth = 2.5 * scale
-      ..style = PaintingStyle.stroke;
+    // Label — JetBrains Mono, white, centred, at most 2 lines.
+    final textStyle = GoogleFonts.jetBrainsMono(
+      fontSize: 11,
+      fontWeight: isRoot ? FontWeight.bold : FontWeight.normal,
+      color: Colors.white,
+    );
+    final tp = TextPainter(
+      text: TextSpan(text: label, style: textStyle),
+      textDirection: TextDirection.ltr,
+      textAlign: TextAlign.center,
+      maxLines: 2,
+      ellipsis: '…',
+    )..layout(maxWidth: radius * 1.7);
 
-    // Build node position map
-    final posMap = <String, Offset>{};
-    for (final n in nodes) {
-      posMap[n.node.id] = _toScreen(size, n.x, n.y);
-    }
+    tp.paint(
+      canvas,
+      center - Offset(tp.width / 2, tp.height / 2),
+    );
+  }
 
-    // Draw edges
-    for (final edge in edges) {
-      final src = posMap[edge.sourceId];
-      final tgt = posMap[edge.targetId];
-      if (src == null || tgt == null) continue;
+  @override
+  bool shouldRepaint(_NodePainter old) =>
+      old.isRoot != isRoot ||
+      old.isHovered != isHovered ||
+      old.fill != fill ||
+      old.label != label;
+}
 
-      final paint =
-          edge.edgeType == 'depends_on' ? dependsPaint : edgePaint;
+// ---------------------------------------------------------------------------
+// Edge painter callback — graphview calls this for every edge.
+// We override via the `paint` parameter on gv.GraphView, but for per-type
+// styling we need to draw on top. Since graphview's built-in edge paint
+// is a single Paint, we use a post-frame overlay CustomPainter for advanced
+// dash patterns. For now, the per-type colors are passed via the edge paint
+// set in _buildGraph(), which graphview honours per-edge.
+// ---------------------------------------------------------------------------
 
-      // Draw curved line
-      final path = Path();
-      final ctrl = Offset(
-        (src.dx + tgt.dx) / 2 + (tgt.dy - src.dy) * 0.2,
-        (src.dy + tgt.dy) / 2 - (tgt.dx - src.dx) * 0.2,
-      );
-      path.moveTo(src.dx, src.dy);
-      path.quadraticBezierTo(ctrl.dx, ctrl.dy, tgt.dx, tgt.dy);
-      canvas.drawPath(path, paint);
+// ---------------------------------------------------------------------------
+// Legend widget
+// ---------------------------------------------------------------------------
+class _GraphLegend extends StatelessWidget {
+  const _GraphLegend();
 
-      // Edge label
-      final labelPos = Offset(
-        (src.dx + tgt.dx) / 2,
-        (src.dy + tgt.dy) / 2,
-      );
-      final tp = TextPainter(
-        text: TextSpan(
-          text: edge.edgeType,
-          style: TextStyle(
-              fontSize: (10 * scale).clamp(8, 12),
-              color: const Color(0xFF9CA3AF)),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout();
-      tp.paint(canvas,
-          labelPos - Offset(tp.width / 2, tp.height / 2));
-    }
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xCC1A241A),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFF2A3A28), width: 1),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _LegendRow(color: _kRootRing, label: 'Root node', ring: true),
+          const SizedBox(height: 6),
+          _LegendRow(color: _kFresh, label: 'Fresh'),
+          const SizedBox(height: 4),
+          _LegendRow(color: _kAging, label: 'Aging'),
+          const SizedBox(height: 4),
+          _LegendRow(color: _kStale, label: 'Stale'),
+          const SizedBox(height: 8),
+          const _LegendDivider(),
+          const SizedBox(height: 6),
+          _EdgeLegendRow(color: _kEdgeRef, label: 'reference'),
+          const SizedBox(height: 4),
+          _EdgeLegendRow(color: _kEdgeDepends, label: 'depends_on', dashed: true),
+          const SizedBox(height: 4),
+          _EdgeLegendRow(color: _kEdgeSuper, label: 'supersedes', dotted: true),
+          const SizedBox(height: 4),
+          _EdgeLegendRow(color: _kEdgeRelated, label: 'related_to'),
+        ],
+      ),
+    );
+  }
+}
 
-    // Draw nodes
-    for (final n in nodes) {
-      final pos = posMap[n.node.id];
-      if (pos == null) continue;
+class _LegendRow extends StatelessWidget {
+  final Color color;
+  final String label;
+  final bool ring;
 
-      final r = nodeRadius(n.node) * scale;
-      final isRoot = n.node.id == rootId;
-      final isHovered = n.node.id == hoveredNodeId;
-      final fillColor = _freshnessColor(n.node.freshnessStatus);
+  const _LegendRow({required this.color, required this.label, this.ring = false});
 
-      // Shadow
-      if (isHovered || isRoot) {
-        canvas.drawCircle(
-          pos + const Offset(2, 2),
-          r + 2,
-          Paint()..color = Colors.black.withOpacity(0.15),
-        );
-      }
-
-      // Fill
-      canvas.drawCircle(
-        pos,
-        r,
-        Paint()..color = fillColor.withOpacity(0.2),
-      );
-
-      // Border
-      canvas.drawCircle(
-        pos,
-        r,
-        Paint()
-          ..color = fillColor
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = (isRoot ? 3.0 : 1.5) * scale,
-      );
-
-      // Title text
-      final maxChars = 18;
-      final title = n.node.title.length > maxChars
-          ? '${n.node.title.substring(0, maxChars)}...'
-          : n.node.title;
-
-      final tp = TextPainter(
-        text: TextSpan(
-          text: title,
-          style: TextStyle(
-            fontSize: (11 * scale).clamp(9, 14),
-            fontWeight: isRoot ? FontWeight.bold : FontWeight.normal,
-            color: Colors.black87,
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 14,
+          height: 14,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: ring ? Colors.transparent : color.withOpacity(0.85),
+            border: Border.all(
+              color: color,
+              width: ring ? 2.5 : 1.5,
+            ),
           ),
         ),
-        textDirection: TextDirection.ltr,
-        textAlign: TextAlign.center,
-        maxLines: 2,
-      )..layout(maxWidth: r * 2);
+        const SizedBox(width: 8),
+        Text(
+          label,
+          style: GoogleFonts.jetBrainsMono(
+            fontSize: 10,
+            color: Colors.white70,
+          ),
+        ),
+      ],
+    );
+  }
+}
 
-      tp.paint(canvas, pos - Offset(tp.width / 2, tp.height / 2));
+class _EdgeLegendRow extends StatelessWidget {
+  final Color color;
+  final String label;
+  final bool dashed;
+  final bool dotted;
+
+  const _EdgeLegendRow({
+    required this.color,
+    required this.label,
+    this.dashed = false,
+    this.dotted = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(
+          width: 22,
+          height: 14,
+          child: CustomPaint(
+            painter: _DashLinePainter(
+              color: color,
+              dashed: dashed,
+              dotted: dotted,
+            ),
+          ),
+        ),
+        const SizedBox(width: 6),
+        Text(
+          label,
+          style: GoogleFonts.jetBrainsMono(
+            fontSize: 10,
+            color: Colors.white70,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _DashLinePainter extends CustomPainter {
+  final Color color;
+  final bool dashed;
+  final bool dotted;
+
+  const _DashLinePainter({
+    required this.color,
+    required this.dashed,
+    required this.dotted,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke;
+
+    final y = size.height / 2;
+
+    if (!dashed && !dotted) {
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
+      return;
+    }
+
+    final dashLen = dotted ? 1.5 : 4.0;
+    final gapLen = dotted ? 3.0 : 3.0;
+    double x = 0;
+    while (x < size.width) {
+      canvas.drawLine(
+        Offset(x, y),
+        Offset(math.min(x + dashLen, size.width), y),
+        paint,
+      );
+      x += dashLen + gapLen;
     }
   }
 
   @override
-  bool shouldRepaint(_GraphPainter old) =>
-      old.nodes != nodes ||
-      old.scale != scale ||
-      old.pan != pan ||
-      old.hoveredNodeId != hoveredNodeId;
+  bool shouldRepaint(_DashLinePainter old) => false;
 }
 
-class _NodeState {
-  final GraphNode node;
-  final double x;
-  final double y;
-  final double vx;
-  final double vy;
-  final bool isRoot;
+class _LegendDivider extends StatelessWidget {
+  const _LegendDivider();
 
-  const _NodeState({
-    required this.node,
-    required this.x,
-    required this.y,
-    required this.vx,
-    required this.vy,
-    required this.isRoot,
-  });
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 1,
+      width: 120,
+      color: const Color(0xFF2A3A28),
+    );
+  }
+}
 
-  _NodeState copyWith({
-    GraphNode? node,
-    double? x,
-    double? y,
-    double? vx,
-    double? vy,
-    bool? isRoot,
-  }) {
-    return _NodeState(
-      node: node ?? this.node,
-      x: x ?? this.x,
-      y: y ?? this.y,
-      vx: vx ?? this.vx,
-      vy: vy ?? this.vy,
-      isRoot: isRoot ?? this.isRoot,
+// ---------------------------------------------------------------------------
+// Empty state
+// ---------------------------------------------------------------------------
+class _EmptyState extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return ColoredBox(
+      color: _kBg,
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Text(
+            'No connections yet.\nAdd links between pages to build the graph.',
+            textAlign: TextAlign.center,
+            style: GoogleFonts.jetBrainsMono(
+              fontSize: 14,
+              color: const Color(0xFF5A7A50),
+              height: 1.6,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Truncation warning banner
+// ---------------------------------------------------------------------------
+class _TruncationBanner extends StatelessWidget {
+  final int rendered;
+  final int total;
+
+  const _TruncationBanner({required this.rendered, required this.total});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      color: const Color(0xCC3A3000),
+      child: Row(
+        children: [
+          const Icon(Icons.warning_amber_rounded,
+              size: 14, color: Color(0xFFD4A017)),
+          const SizedBox(width: 8),
+          Text(
+            'Graph has $total nodes. Showing the closest $rendered for performance.',
+            style: GoogleFonts.jetBrainsMono(
+              fontSize: 11,
+              color: const Color(0xFFD4A017),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
