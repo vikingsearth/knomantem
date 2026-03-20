@@ -146,29 +146,48 @@ func (s *FreshnessService) Dashboard(ctx context.Context, userID string, status 
 }
 
 // RunDecay applies time-based decay to all freshness records. Called by the worker.
+// It processes at most 500 records per run to avoid long-running transactions.
+// The decay formula is idempotent: newScore = max(0, 100 * (1 - decayRate * daysSinceReview / reviewIntervalDays)).
+// Notifications are sent only when a page's status transitions to stale for the first time in this cycle.
 func (s *FreshnessService) RunDecay(ctx context.Context) error {
-	// Stale threshold: score below 30
-	stale, err := s.freshness.ListStale(ctx, 30.0, 1000)
+	const batchSize = 500
+
+	// Fetch all pages whose next_review_at has passed, regardless of current score.
+	// This fixes the bug where pages between score 30-70 (Aging) were never updated
+	// because the old query only returned pages already below score 30.
+	records, err := s.freshness.ListNeedingDecay(ctx, batchSize)
 	if err != nil {
 		return err
 	}
 
 	now := time.Now()
-	for _, f := range stale {
+	for _, f := range records {
 		if f.LastReviewedAt.IsZero() {
 			continue
 		}
+
+		// Capture previous status before updating so we can detect status transitions.
+		prevStatus := f.Status
+
 		days := now.Sub(f.LastReviewedAt).Hours() / 24
 		newScore := 100.0 * (1 - f.DecayRate*days/float64(f.ReviewIntervalDays))
 		if newScore < 0 {
 			newScore = 0
 		}
-		f.Score = newScore
-		f.Status = freshnessStatus(newScore)
-		_, _ = s.freshness.Update(ctx, f)
 
-		// Notify page owner when score drops below threshold.
-		if newScore < 30 {
+		newStatus := freshnessStatus(newScore)
+		f.Score = newScore
+		f.Status = newStatus
+
+		if _, err := s.freshness.Update(ctx, f); err != nil {
+			// Log and continue — a single update failure should not abort the whole batch.
+			continue
+		}
+
+		// Send a notification only when the page crosses into stale for the first time
+		// (i.e., it was not already stale before this run). This prevents duplicate
+		// notifications on every subsequent decay cycle.
+		if prevStatus != domain.FreshnessStale && newStatus == domain.FreshnessStale {
 			n := &domain.Notification{
 				UserID:  f.OwnerID,
 				Type:    "freshness_alert",
