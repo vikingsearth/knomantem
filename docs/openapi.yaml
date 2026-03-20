@@ -1,0 +1,2629 @@
+openapi: "3.0.3"
+info:
+  title: Knomantem API
+  description: |
+    REST API for the Knomantem knowledge-management system.
+    All authenticated endpoints require a JWT Bearer token obtained via `/auth/login` or `/auth/register`.
+  version: "1.0.0"
+  contact:
+    name: Knomantem Engineering
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Local development
+  - url: https://api.knomantem.com/api/v1
+    description: Production
+
+# ── Security ──────────────────────────────────────────────────────────────────
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  # ── Reusable parameters ────────────────────────────────────────────────────
+  parameters:
+    pathId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Resource UUID
+
+    pathSpaceId:
+      name: spaceId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Space UUID
+
+    queryLimit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+      description: Maximum number of items to return
+
+    queryCursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Opaque pagination cursor from a previous response
+
+  # ── Reusable schemas ───────────────────────────────────────────────────────
+  schemas:
+
+    # Envelopes
+    Pagination:
+      type: object
+      properties:
+        next_cursor:
+          type: string
+          nullable: true
+        has_more:
+          type: boolean
+        total:
+          type: integer
+      required: [has_more, total]
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: NOT_FOUND
+            message:
+              type: string
+              example: "resource not found"
+          required: [code, message]
+      required: [error]
+
+    # Auth
+    RegisterRequest:
+      type: object
+      required: [email, display_name, password]
+      properties:
+        email:
+          type: string
+          format: email
+          example: alice@example.com
+        display_name:
+          type: string
+          example: Alice
+        password:
+          type: string
+          format: password
+          minLength: 8
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+
+    RefreshRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+
+    AuthTokenResponse:
+      type: object
+      properties:
+        user:
+          $ref: "#/components/schemas/User"
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+      required: [user, access_token, refresh_token]
+
+    TokenPairResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+      required: [access_token, refresh_token]
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+        avatar_url:
+          type: string
+          nullable: true
+        role:
+          type: string
+          enum: [admin, member, viewer]
+        settings:
+          type: object
+          nullable: true
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required: [id, email, display_name, role, created_at]
+
+    # Spaces
+    Space:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        description:
+          type: string
+          nullable: true
+        icon:
+          type: string
+          nullable: true
+        owner_id:
+          type: string
+          format: uuid
+        settings:
+          type: object
+          nullable: true
+          additionalProperties: true
+        page_count:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required: [id, name, slug, owner_id, created_at, updated_at]
+
+    CreateSpaceRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          example: Engineering
+        description:
+          type: string
+          nullable: true
+        icon:
+          type: string
+          nullable: true
+        settings:
+          type: object
+          nullable: true
+          additionalProperties: true
+
+    UpdateSpaceRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        icon:
+          type: string
+          nullable: true
+        settings:
+          type: object
+          nullable: true
+          additionalProperties: true
+
+    SpaceListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Space"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+      required: [data, pagination]
+
+    # Pages
+    PageListItem:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        space_id:
+          type: string
+          format: uuid
+        parent_id:
+          type: string
+          format: uuid
+          nullable: true
+        title:
+          type: string
+        slug:
+          type: string
+        icon:
+          type: string
+          nullable: true
+        position:
+          type: integer
+        depth:
+          type: integer
+        is_template:
+          type: boolean
+        has_children:
+          type: boolean
+        freshness_status:
+          type: string
+          enum: [fresh, aging, stale]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required: [id, space_id, title, slug, position, depth, is_template, has_children, freshness_status, created_at, updated_at]
+
+    FreshnessInfo:
+      type: object
+      properties:
+        score:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+        status:
+          type: string
+          enum: [fresh, aging, stale]
+        last_verified_at:
+          type: string
+          format: date-time
+          nullable: true
+        next_review_at:
+          type: string
+          format: date-time
+          nullable: true
+      required: [score, status]
+
+    TagRef:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        color:
+          type: string
+      required: [id, name, color]
+
+    PageDetail:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        space_id:
+          type: string
+          format: uuid
+        parent_id:
+          type: string
+          format: uuid
+          nullable: true
+        title:
+          type: string
+        slug:
+          type: string
+        content:
+          type: object
+          description: ProseMirror/TipTap document JSON
+          nullable: true
+          additionalProperties: true
+        icon:
+          type: string
+          nullable: true
+        cover_image:
+          type: string
+          nullable: true
+        position:
+          type: integer
+        depth:
+          type: integer
+        is_template:
+          type: boolean
+        created_by:
+          type: string
+          format: uuid
+        updated_by:
+          type: string
+          format: uuid
+        freshness:
+          $ref: "#/components/schemas/FreshnessInfo"
+          nullable: true
+        tags:
+          type: array
+          items:
+            $ref: "#/components/schemas/TagRef"
+        version:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required: [id, space_id, title, slug, position, depth, is_template, created_by, updated_by, version, created_at, updated_at]
+
+    CreatePageRequest:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          example: "My new page"
+        parent_id:
+          type: string
+          format: uuid
+          nullable: true
+        content:
+          type: object
+          description: ProseMirror document JSON
+          nullable: true
+          additionalProperties: true
+        icon:
+          type: string
+          nullable: true
+        position:
+          type: integer
+          default: 0
+        is_template:
+          type: boolean
+          default: false
+
+    UpdatePageRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          nullable: true
+        content:
+          type: object
+          description: ProseMirror document JSON
+          nullable: true
+          additionalProperties: true
+        icon:
+          type: string
+          nullable: true
+        cover_image:
+          type: string
+          nullable: true
+        change_summary:
+          type: string
+          nullable: true
+
+    MovePageRequest:
+      type: object
+      required: [position]
+      properties:
+        parent_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: New parent page UUID; null to move to root
+        position:
+          type: integer
+          minimum: 0
+
+    MovePageResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        parent_id:
+          type: string
+          format: uuid
+          nullable: true
+        position:
+          type: integer
+        depth:
+          type: integer
+        updated_at:
+          type: string
+          format: date-time
+      required: [id, position, depth, updated_at]
+
+    PageVersion:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        page_id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+        title:
+          type: string
+        change_summary:
+          type: string
+          nullable: true
+        created_by:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+              format: uuid
+            display_name:
+              type: string
+        created_at:
+          type: string
+          format: date-time
+      required: [id, page_id, version, title, created_at]
+
+    PageVersionDetail:
+      allOf:
+        - $ref: "#/components/schemas/PageVersion"
+        - type: object
+          properties:
+            content:
+              type: object
+              nullable: true
+              additionalProperties: true
+
+    ImportMarkdownRequest:
+      type: object
+      required: [markdown]
+      properties:
+        markdown:
+          type: string
+          description: Raw Markdown text to import
+
+    ImportMarkdownResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        content:
+          type: object
+          nullable: true
+          additionalProperties: true
+        version:
+          type: integer
+        updated_at:
+          type: string
+          format: date-time
+      required: [id, title, version, updated_at]
+
+    ExportMarkdownResponse:
+      type: object
+      properties:
+        page_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        markdown:
+          type: string
+        exported_at:
+          type: string
+          format: date-time
+      required: [page_id, title, markdown, exported_at]
+
+    # Search
+    SearchItem:
+      type: object
+      properties:
+        page_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        excerpt:
+          type: string
+        space:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
+        freshness:
+          type: object
+          properties:
+            score:
+              type: number
+              format: double
+            status:
+              type: string
+              enum: [fresh, aging, stale]
+        tags:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              color:
+                type: string
+        score:
+          type: number
+          format: double
+        updated_at:
+          type: string
+          format: date-time
+      required: [page_id, title, excerpt, space, freshness, score, updated_at]
+
+    SearchFacets:
+      type: object
+      properties:
+        spaces:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+              name:
+                type: string
+              count:
+                type: integer
+        tags:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              count:
+                type: integer
+        freshness:
+          type: array
+          items:
+            type: object
+            properties:
+              status:
+                type: string
+              count:
+                type: integer
+
+    SearchResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            results:
+              type: array
+              items:
+                $ref: "#/components/schemas/SearchItem"
+            facets:
+              $ref: "#/components/schemas/SearchFacets"
+              nullable: true
+            query_time_ms:
+              type: integer
+            total:
+              type: integer
+          required: [results, query_time_ms, total]
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+      required: [data, pagination]
+
+    # Freshness
+    Freshness:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        page_id:
+          type: string
+          format: uuid
+        owner_id:
+          type: string
+          format: uuid
+        freshness_score:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+        status:
+          type: string
+          enum: [fresh, aging, stale]
+        review_interval_days:
+          type: integer
+          minimum: 1
+        decay_rate:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+        last_reviewed_at:
+          type: string
+          format: date-time
+          nullable: true
+        next_review_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_verified_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_verified_by:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+              format: uuid
+            display_name:
+              type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required: [id, page_id, owner_id, freshness_score, status, review_interval_days, decay_rate, created_at, updated_at]
+
+    VerifyRequest:
+      type: object
+      properties:
+        notes:
+          type: string
+          nullable: true
+
+    VerifyResponse:
+      type: object
+      properties:
+        page_id:
+          type: string
+          format: uuid
+        freshness_score:
+          type: number
+          format: double
+        status:
+          type: string
+          enum: [fresh, aging, stale]
+        next_review_at:
+          type: string
+          format: date-time
+        last_verified_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_verified_by:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+              format: uuid
+            display_name:
+              type: string
+        updated_at:
+          type: string
+          format: date-time
+      required: [page_id, freshness_score, status, next_review_at, updated_at]
+
+    FreshnessSettingsRequest:
+      type: object
+      properties:
+        review_interval_days:
+          type: integer
+          minimum: 1
+          nullable: true
+        decay_rate:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          nullable: true
+        owner_id:
+          type: string
+          format: uuid
+          nullable: true
+
+    FreshnessSettingsResponse:
+      type: object
+      properties:
+        page_id:
+          type: string
+          format: uuid
+        review_interval_days:
+          type: integer
+        decay_rate:
+          type: number
+          format: double
+        owner_id:
+          type: string
+          format: uuid
+        next_review_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required: [page_id, review_interval_days, decay_rate, owner_id, next_review_at, updated_at]
+
+    FreshnessDashboardResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            summary:
+              type: object
+              properties:
+                total_pages:
+                  type: integer
+                fresh:
+                  type: integer
+                aging:
+                  type: integer
+                stale:
+                  type: integer
+                average_score:
+                  type: number
+                  format: double
+              required: [total_pages, fresh, aging, stale, average_score]
+            pages:
+              type: array
+              items:
+                type: object
+                properties:
+                  page_id:
+                    type: string
+                    format: uuid
+                  title:
+                    type: string
+                  space:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        format: uuid
+                      name:
+                        type: string
+                  freshness_score:
+                    type: number
+                    format: double
+                  status:
+                    type: string
+                    enum: [fresh, aging, stale]
+                  last_verified_at:
+                    type: string
+                    format: date-time
+                    nullable: true
+                  next_review_at:
+                    type: string
+                    format: date-time
+                  owner:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        format: uuid
+                      display_name:
+                        type: string
+                required: [page_id, title, freshness_score, status, next_review_at]
+          required: [summary, pages]
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+      required: [data, pagination]
+
+    # Graph
+    GraphNode:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        freshness_status:
+          type: string
+          enum: [fresh, aging, stale]
+      required: [id, title, freshness_status]
+
+    GraphEdge:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        source:
+          $ref: "#/components/schemas/GraphNode"
+        target:
+          $ref: "#/components/schemas/GraphNode"
+        edge_type:
+          type: string
+        metadata:
+          type: object
+          nullable: true
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+      required: [id, source, target, edge_type, created_at]
+
+    GraphNeighbors:
+      type: object
+      properties:
+        center:
+          $ref: "#/components/schemas/GraphNode"
+        edges:
+          type: array
+          items:
+            $ref: "#/components/schemas/GraphEdge"
+        node_count:
+          type: integer
+        edge_count:
+          type: integer
+      required: [center, edges, node_count, edge_count]
+
+    CreateEdgeRequest:
+      type: object
+      required: [target_page_id, edge_type]
+      properties:
+        target_page_id:
+          type: string
+          format: uuid
+        edge_type:
+          type: string
+          example: related
+        metadata:
+          type: object
+          nullable: true
+          additionalProperties: true
+
+    CreateEdgeResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            source_page_id:
+              type: string
+              format: uuid
+            target_page_id:
+              type: string
+              format: uuid
+            edge_type:
+              type: string
+            metadata:
+              type: object
+              nullable: true
+              additionalProperties: true
+            created_by:
+              type: string
+              format: uuid
+            created_at:
+              type: string
+              format: date-time
+          required: [id, source_page_id, target_page_id, edge_type, created_by, created_at]
+      required: [data]
+
+    GraphExploreResult:
+      type: object
+      properties:
+        nodes:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+              title:
+                type: string
+              space_id:
+                type: string
+                format: uuid
+              freshness_status:
+                type: string
+                enum: [fresh, aging, stale]
+              connection_count:
+                type: integer
+              depth_from_root:
+                type: integer
+            required: [id, title, space_id, freshness_status, connection_count, depth_from_root]
+        edges:
+          type: array
+          items:
+            type: object
+            properties:
+              source_id:
+                type: string
+                format: uuid
+              target_id:
+                type: string
+                format: uuid
+              edge_type:
+                type: string
+            required: [source_id, target_id, edge_type]
+        total_nodes:
+          type: integer
+        total_edges:
+          type: integer
+        truncated:
+          type: boolean
+      required: [nodes, edges, total_nodes, total_edges, truncated]
+
+    # Tags
+    Tag:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        color:
+          type: string
+        is_ai_generated:
+          type: boolean
+        page_count:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+      required: [id, name, color, is_ai_generated, created_at]
+
+    CreateTagRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          example: architecture
+        color:
+          type: string
+          example: "#3b82f6"
+
+    AddTagsRequest:
+      type: object
+      required: [tags]
+      properties:
+        tags:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [tag_id]
+            properties:
+              tag_id:
+                type: string
+                format: uuid
+              confidence_score:
+                type: number
+                format: double
+                minimum: 0
+                maximum: 1
+                default: 1.0
+
+    AddTagsResponse:
+      type: object
+      properties:
+        page_id:
+          type: string
+          format: uuid
+        tags:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+              name:
+                type: string
+              color:
+                type: string
+              confidence_score:
+                type: number
+                format: double
+            required: [id, name, color, confidence_score]
+      required: [page_id, tags]
+
+    # Presence
+    PresenceUser:
+      type: object
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+        avatar_url:
+          type: string
+          nullable: true
+        joined_at:
+          type: string
+          format: date-time
+      required: [user_id, display_name, joined_at]
+
+# ── Paths ──────────────────────────────────────────────────────────────────────
+paths:
+
+  # ---- Auth ------------------------------------------------------------------
+
+  /auth/register:
+    post:
+      tags: [auth]
+      summary: Register a new user
+      operationId: registerUser
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: User created and tokens issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthTokenResponse"
+        "400":
+          description: Malformed request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Email already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: Validation error (missing required fields)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Authenticate and receive tokens
+      operationId: loginUser
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Successful login
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthTokenResponse"
+        "400":
+          description: Malformed request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/refresh:
+    post:
+      tags: [auth]
+      summary: Rotate JWT tokens using a refresh token
+      operationId: refreshTokens
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "200":
+          description: New token pair
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPairResponse"
+        "400":
+          description: Malformed request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Invalid or expired refresh token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/me:
+    get:
+      tags: [auth]
+      summary: Return the authenticated user's profile
+      operationId: getMe
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Current user profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ---- Spaces ----------------------------------------------------------------
+
+  /spaces:
+    get:
+      tags: [spaces]
+      summary: List spaces accessible to the authenticated user
+      operationId: listSpaces
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/queryCursor"
+        - $ref: "#/components/parameters/queryLimit"
+      responses:
+        "200":
+          description: Paginated list of spaces
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SpaceListResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    post:
+      tags: [spaces]
+      summary: Create a new space
+      operationId: createSpace
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSpaceRequest"
+      responses:
+        "201":
+          description: Space created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Space"
+        "400":
+          description: Malformed request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Space slug already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /spaces/{id}:
+    get:
+      tags: [spaces]
+      summary: Get a single space by ID
+      operationId: getSpaceByID
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/pathId"
+      responses:
+        "200":
+          description: Space detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Space"
+        "400":
+          description: Invalid UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Space not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    put:
+      tags: [spaces]
+      summary: Update a space
+      operationId: updateSpace
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/pathId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSpaceRequest"
+      responses:
+        "200":
+          description: Updated space
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Space"
+        "400":
+          description: Malformed request body or invalid UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Space not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    delete:
+      tags: [spaces]
+      summary: Delete a space
+      operationId: deleteSpace
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/pathId"
+      responses:
+        "204":
+          description: Space deleted
+        "400":
+          description: Invalid UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Space not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ---- Pages (space-scoped) --------------------------------------------------
+
+  /spaces/{spaceId}/pages:
+    get:
+      tags: [pages]
+      summary: List pages in a space (tree or flat)
+      operationId: listPagesBySpace
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/pathSpaceId"
+        - name: format
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [flat, tree]
+            default: flat
+          description: Response shape — flat list or nested tree
+        - name: depth
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+          description: Maximum depth to include (omit for unlimited)
+      responses:
+        "200":
+          description: List of pages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PageListItem"
+        "400":
+          description: Invalid space UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Space not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    post:
+      tags: [pages]
+      summary: Create a page in a space
+      operationId: createPage
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/pathSpaceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePageRequest"
+      responses:
+        "201":
+          description: Page created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PageDetail"
+        "400":
+          description: Malformed request body or invalid UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Space or parent page not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: Validation error (e.g., title missing)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ---- Pages (individual) ----------------------------------------------------
+
+  /pages/{id}:
+    get:
+      tags: [pages]
+      summary: Get a page by ID
+      operationId: getPageByID
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/pathId"
+      responses:
+        "200":
+          description: Page detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PageDetail"
+        "400":
+          description: Invalid UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Page not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    put:
+      tags: [pages]
+      summary: Update a page
+      operationId: updatePage
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/pathId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePageRequest"
+      responses:
+        "200":
+          description: Updated page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PageDetail"
+        "400":
+          description: Malformed request body or invalid UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Page not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    delete:
+      tags: [pages]
+      summary: Delete a page
+      operationId: deletePage
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/pathId"
+      responses:
+        "204":
+          description: Page deleted
+        "400":
+          description: Invalid UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Page not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /pages/{id}/move:
+    put:
+      tags: [pages]
+      summary: Move a page to a new parent / position
+      operationId: movePage
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/pathId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MovePageRequest"
+      responses:
+        "200":
+          description: Page moved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MovePageResponse"
+        "400":
+          description: Invalid UUID or parent_id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Page not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /pages/{id}/versions:
+    get:
+      tags: [pages]
+      summary: List version history for a page
+      operationId: listPageVersions
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/pathId"
+      responses:
+        "200":
+          description: List of page versions (without content)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PageVersion"
+        "400":
+          description: Invalid UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Page not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /pages/{id}/versions/{version}:
+    get:
+      tags: [pages]
+      summary: Get a specific historical version of a page
+      operationId: getPageVersion
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/pathId"
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+          description: Version number
+      responses:
+        "200":
+          description: Page version with content
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PageVersionDetail"
+        "400":
+          description: Invalid UUID or version number
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Page or version not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /pages/{id}/import/markdown:
+    post:
+      tags: [pages]
+      summary: Replace page content from Markdown
+      operationId: importMarkdown
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/pathId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImportMarkdownRequest"
+      responses:
+        "200":
+          description: Page updated with parsed content
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportMarkdownResponse"
+        "400":
+          description: Malformed request body or invalid UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Page not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: Validation error (markdown field missing)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /pages/{id}/export/markdown:
+    get:
+      tags: [pages]
+      summary: Export page content as Markdown
+      operationId: exportMarkdown
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/pathId"
+      responses:
+        "200":
+          description: Markdown export
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExportMarkdownResponse"
+        "400":
+          description: Invalid UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Page not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ---- Search ----------------------------------------------------------------
+
+  /search:
+    get:
+      tags: [search]
+      summary: Full-text search across pages
+      operationId: search
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Search query string
+        - name: space
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Limit to a specific space
+        - name: tags
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Comma-separated tag names to filter by
+        - name: freshness
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [fresh, aging, stale]
+          description: Filter by freshness status
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: Filter pages updated after this date (ISO 8601)
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: Filter pages updated before this date (ISO 8601)
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [relevance, updated_at, freshness_score]
+            default: relevance
+        - $ref: "#/components/parameters/queryCursor"
+        - $ref: "#/components/parameters/queryLimit"
+      responses:
+        "200":
+          description: Search results with facets
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResponse"
+        "400":
+          description: Missing or invalid query parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ---- Freshness (page-specific) ---------------------------------------------
+
+  /pages/{id}/freshness:
+    get:
+      tags: [freshness]
+      summary: Get freshness record for a page
+      operationId: getPageFreshness
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/pathId"
+      responses:
+        "200":
+          description: Freshness record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Freshness"
+        "400":
+          description: Invalid UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Page not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /pages/{id}/freshness/verify:
+    post:
+      tags: [freshness]
+      summary: Mark a page as verified (resets score to 100)
+      operationId: verifyPage
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/pathId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyRequest"
+      responses:
+        "200":
+          description: Freshness record after verification
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifyResponse"
+        "400":
+          description: Invalid UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Page not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /pages/{id}/freshness/settings:
+    put:
+      tags: [freshness]
+      summary: Update freshness settings for a page
+      operationId: updateFreshnessSettings
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/pathId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FreshnessSettingsRequest"
+      responses:
+        "200":
+          description: Updated freshness settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FreshnessSettingsResponse"
+        "400":
+          description: Malformed request body or invalid UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Page not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: Validation error (invalid interval, decay rate, or owner ID)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ---- Freshness dashboard ---------------------------------------------------
+
+  /freshness/dashboard:
+    get:
+      tags: [freshness]
+      summary: Freshness dashboard — aggregated stats and page list
+      operationId: freshnessDashboard
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [fresh, aging, stale]
+          description: Filter by freshness status
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [score, next_review_at, updated_at]
+            default: score
+        - $ref: "#/components/parameters/queryCursor"
+        - $ref: "#/components/parameters/queryLimit"
+      responses:
+        "200":
+          description: Dashboard data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FreshnessDashboardResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ---- Graph -----------------------------------------------------------------
+
+  /pages/{id}/graph:
+    get:
+      tags: [graph]
+      summary: Get immediate graph neighbours for a page
+      operationId: getPageNeighbors
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/pathId"
+        - name: edge_type
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by edge type (e.g. related, parent)
+        - name: direction
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [in, out, both]
+            default: both
+      responses:
+        "200":
+          description: Neighbours and edges
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GraphNeighbors"
+        "400":
+          description: Invalid UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Page not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /pages/{id}/graph/edges:
+    post:
+      tags: [graph]
+      summary: Create a graph edge from this page to another
+      operationId: createEdge
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/pathId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateEdgeRequest"
+      responses:
+        "201":
+          description: Edge created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateEdgeResponse"
+        "400":
+          description: Malformed request body or invalid UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Source or target page not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: Validation error (missing target_page_id or edge_type)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /graph/explore:
+    get:
+      tags: [graph]
+      summary: Explore the knowledge graph from a root page
+      operationId: exploreGraph
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: root
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Root page UUID
+        - name: depth
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 5
+            default: 2
+          description: Traversal depth
+        - name: edge_type
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by edge type
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 100
+          description: Maximum number of nodes to return
+      responses:
+        "200":
+          description: Subgraph rooted at the given page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GraphExploreResult"
+        "400":
+          description: Missing or invalid root parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ---- Tags ------------------------------------------------------------------
+
+  /tags:
+    get:
+      tags: [tags]
+      summary: List tags (with optional search)
+      operationId: listTags
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Search query to filter tags by name
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: List of tags
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Tag"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    post:
+      tags: [tags]
+      summary: Create a tag
+      operationId: createTag
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTagRequest"
+      responses:
+        "201":
+          description: Tag created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tag"
+        "400":
+          description: Malformed request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Tag name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /pages/{id}/tags:
+    post:
+      tags: [tags]
+      summary: Assign tags to a page
+      operationId: addTagsToPage
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/pathId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddTagsRequest"
+      responses:
+        "200":
+          description: Tags assigned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddTagsResponse"
+        "400":
+          description: Malformed request body or invalid UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Page or tag not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: Validation error (empty tags array)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ---- Presence --------------------------------------------------------------
+
+  /pages/{id}/presence:
+    get:
+      tags: [presence]
+      summary: WebSocket upgrade — join the presence channel for a page
+      operationId: connectPresence
+      description: |
+        Upgrades the HTTP connection to a WebSocket. The client must send the
+        JWT token via the `Authorization: Bearer <token>` header (handled by
+        the JWT middleware before the upgrade).
+
+        **Server-sent events** (JSON):
+        - `{ "type": "joined",  "user": { ... } }` — a user joined the page
+        - `{ "type": "left",   "user_id": "..." }` — a user left the page
+        - `{ "type": "viewers","users": [ ... ] }` — current viewer list on connect
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/pathId"
+      responses:
+        "101":
+          description: Switching protocols (WebSocket upgrade)
+        "400":
+          description: Invalid page UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Page not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /pages/{id}/presence/viewers:
+    get:
+      tags: [presence]
+      summary: Get the list of users currently viewing a page
+      operationId: getPresenceViewers
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/pathId"
+      responses:
+        "200":
+          description: Active viewers
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PresenceUser"
+        "400":
+          description: Invalid UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
