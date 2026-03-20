@@ -79,7 +79,7 @@ func main() {
 	// ── Services ──────────────────────────────────────────────────────────────
 	authSvc := service.NewAuthService(userRepo, cfg.JWTSecret, cfg.JWTExpiry, cfg.RefreshExpiry)
 	spaceSvc := service.NewSpaceService(spaceRepo)
-	pageSvc := service.NewPageService(pageRepo, searchRepo, edgeRepo, tagRepo)
+	pageSvc := service.NewPageService(pageRepo, searchRepo, edgeRepo, tagRepo, freshnessRepo)
 	searchSvc := service.NewSearchService(searchRepo, pageRepo, freshnessRepo)
 	freshnessSvc := service.NewFreshnessService(freshnessRepo, pageRepo, notificationRepo)
 	graphSvc := service.NewGraphService(edgeRepo, pageRepo)

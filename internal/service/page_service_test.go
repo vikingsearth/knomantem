@@ -177,10 +177,30 @@ func (m *stubTagRepo) ListByPage(ctx context.Context, pageID uuid.UUID) ([]domai
 	return nil, nil
 }
 
+// ---- stub FreshnessRepository ----
+
+type stubFreshnessRepo struct{}
+
+func (m *stubFreshnessRepo) GetByPageID(ctx context.Context, pageID uuid.UUID) (*domain.Freshness, error) {
+	return nil, domain.ErrNotFound
+}
+func (m *stubFreshnessRepo) Create(ctx context.Context, f *domain.Freshness) (*domain.Freshness, error) {
+	return f, nil
+}
+func (m *stubFreshnessRepo) Update(ctx context.Context, f *domain.Freshness) (*domain.Freshness, error) {
+	return f, nil
+}
+func (m *stubFreshnessRepo) ListStale(ctx context.Context, threshold float64, limit int) ([]*domain.Freshness, error) {
+	return nil, nil
+}
+func (m *stubFreshnessRepo) Dashboard(ctx context.Context, userID string, status string, sort string, cursor string, limit int) ([]*domain.Freshness, int, string, error) {
+	return nil, 0, "", nil
+}
+
 // ---- helper constructors ----
 
 func newPageSvc(pr *stubPageRepo, sr *stubSearchRepo) *PageService {
-	return NewPageService(pr, sr, &stubEdgeRepo{}, &stubTagRepo{})
+	return NewPageService(pr, sr, &stubEdgeRepo{}, &stubTagRepo{}, &stubFreshnessRepo{})
 }
 
 func makeContentJSON(text string) json.RawMessage {

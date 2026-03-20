@@ -25,14 +25,14 @@ func (r *FreshnessRepo) GetByPageID(ctx context.Context, pageID uuid.UUID) (*dom
 		SELECT id, page_id, owner_id, freshness_score, review_interval_days, decay_rate,
 		       last_reviewed_at, next_review_at, last_verified_at, last_verified_by,
 		       status, created_at, updated_at
-		FROM page_freshness WHERE page_id = $1`
+		FROM freshness_records WHERE page_id = $1`
 	row := r.db.Pool.QueryRow(ctx, q, pageID)
 	return scanFreshness(row)
 }
 
 func (r *FreshnessRepo) Create(ctx context.Context, f *domain.Freshness) (*domain.Freshness, error) {
 	const q = `
-		INSERT INTO page_freshness
+		INSERT INTO freshness_records
 		  (id, page_id, owner_id, freshness_score, review_interval_days, decay_rate,
 		   last_reviewed_at, next_review_at, last_verified_at, last_verified_by, status)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
@@ -56,7 +56,7 @@ func (r *FreshnessRepo) Create(ctx context.Context, f *domain.Freshness) (*domai
 
 func (r *FreshnessRepo) Update(ctx context.Context, f *domain.Freshness) (*domain.Freshness, error) {
 	const q = `
-		UPDATE page_freshness
+		UPDATE freshness_records
 		SET owner_id=$2, freshness_score=$3, review_interval_days=$4, decay_rate=$5,
 		    last_reviewed_at=$6, next_review_at=$7, last_verified_at=$8,
 		    last_verified_by=$9, status=$10, updated_at=NOW()
@@ -81,7 +81,7 @@ func (r *FreshnessRepo) ListStale(ctx context.Context, threshold float64, limit 
 		SELECT id, page_id, owner_id, freshness_score, review_interval_days, decay_rate,
 		       last_reviewed_at, next_review_at, last_verified_at, last_verified_by,
 		       status, created_at, updated_at
-		FROM page_freshness WHERE freshness_score < $1
+		FROM freshness_records WHERE freshness_score < $1
 		ORDER BY freshness_score ASC
 		LIMIT $2`
 	rows, err := r.db.Pool.Query(ctx, q, threshold, limit)
@@ -168,7 +168,7 @@ func (r *FreshnessRepo) Dashboard(ctx context.Context, userID string, status str
 		SELECT id, page_id, owner_id, freshness_score, review_interval_days, decay_rate,
 		       last_reviewed_at, next_review_at, last_verified_at, last_verified_by,
 		       status, created_at, updated_at
-		FROM page_freshness
+		FROM freshness_records
 		ORDER BY freshness_score ASC
 		LIMIT $1`
 	rows, err := r.db.Pool.Query(ctx, q, limit)

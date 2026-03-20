@@ -3,8 +3,11 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -12,12 +15,16 @@ import (
 	"github.com/knomantem/knomantem/pkg/markdown"
 )
 
+// uuidRe matches a standard UUID v4 string.
+var uuidRe = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
+
 // PageService handles page business logic.
 type PageService struct {
-	pages  domain.PageRepository
-	search domain.SearchRepository
-	edges  domain.EdgeRepository
-	tags   domain.TagRepository
+	pages     domain.PageRepository
+	search    domain.SearchRepository
+	edges     domain.EdgeRepository
+	tags      domain.TagRepository
+	freshness domain.FreshnessRepository
 }
 
 // NewPageService creates a new PageService.
@@ -26,8 +33,9 @@ func NewPageService(
 	search domain.SearchRepository,
 	edges domain.EdgeRepository,
 	tags domain.TagRepository,
+	freshness domain.FreshnessRepository,
 ) *PageService {
-	return &PageService{pages: pages, search: search, edges: edges, tags: tags}
+	return &PageService{pages: pages, search: search, edges: edges, tags: tags, freshness: freshness}
 }
 
 // ListBySpace returns all pages in a space ordered for tree rendering.
@@ -49,6 +57,7 @@ func (s *PageService) ListBySpace(ctx context.Context, spaceID uuid.UUID, format
 }
 
 // Create creates a new page in a space, indexes it, and returns the persisted entity.
+// It also initialises a freshness record and extracts backlink edges from the content.
 func (s *PageService) Create(ctx context.Context, spaceID uuid.UUID, userID string, req domain.CreatePageRequest) (*domain.Page, error) {
 	uid, err := uuid.Parse(userID)
 	if err != nil {
@@ -64,12 +73,21 @@ func (s *PageService) Create(ctx context.Context, spaceID uuid.UUID, userID stri
 		depth = parent.Depth + 1
 	}
 
+	// Task 1: Generate slug with collision resolution.
+	baseSlug := slugify(req.Title)
+	if baseSlug == "" {
+		baseSlug = "untitled"
+	}
+	if len(baseSlug) > 100 {
+		baseSlug = baseSlug[:100]
+	}
+
 	p := &domain.Page{
 		ID:              uuid.New(),
 		SpaceID:         spaceID,
 		ParentID:        req.ParentID,
 		Title:           req.Title,
-		Slug:            slugify(req.Title),
+		Slug:            baseSlug,
 		Content:         req.Content,
 		Icon:            req.Icon,
 		Position:        req.Position,
@@ -81,15 +99,126 @@ func (s *PageService) Create(ctx context.Context, spaceID uuid.UUID, userID stri
 		UpdatedBy:       uid,
 	}
 
-	created, err := s.pages.Create(ctx, p)
-	if err != nil {
+	// Attempt insert with slug collision retry (up to 10 suffixes).
+	var created *domain.Page
+	for attempt := 0; attempt <= 10; attempt++ {
+		if attempt > 0 {
+			p.Slug = fmt.Sprintf("%s-%d", baseSlug, attempt+1)
+		}
+		created, err = s.pages.Create(ctx, p)
+		if err == nil {
+			break
+		}
+		if errors.Is(err, domain.ErrConflict) && attempt < 10 {
+			// Slug collision — try next suffix.
+			continue
+		}
 		return nil, err
 	}
+
+	// Task 2: Eagerly initialise the freshness record.
+	now := time.Now().UTC()
+	fr := &domain.Freshness{
+		PageID:             created.ID,
+		OwnerID:            uid,
+		Score:              100.0,
+		ReviewIntervalDays: 30,
+		DecayRate:          0.0333,
+		Status:             domain.FreshnessFresh,
+		LastReviewedAt:     now,
+		NextReviewAt:       now.AddDate(0, 0, 30),
+	}
+	if _, fErr := s.freshness.Create(ctx, fr); fErr != nil && !errors.Is(fErr, domain.ErrConflict) {
+		// Conflict means a record already exists (idempotent); other errors are real failures.
+		return nil, fmt.Errorf("page: init freshness: %w", fErr)
+	}
+
+	// Task 3: Extract backlink edges from ProseMirror content.
+	s.extractAndCreateEdges(ctx, created.ID, uid, created.Content)
 
 	// Index asynchronously — errors are non-fatal.
 	_ = s.search.Index(ctx, created)
 
 	return created, nil
+}
+
+// extractAndCreateEdges walks ProseMirror JSON content and creates reference edges
+// for every internal page link found. Errors are non-fatal and logged via discard.
+func (s *PageService) extractAndCreateEdges(ctx context.Context, pageID uuid.UUID, createdBy uuid.UUID, content json.RawMessage) {
+	if len(content) == 0 {
+		return
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(content, &doc); err != nil {
+		return
+	}
+
+	seen := map[uuid.UUID]bool{}
+	targets := extractLinkTargets(doc)
+
+	for _, targetID := range targets {
+		if targetID == pageID {
+			// Skip self-links.
+			continue
+		}
+		if seen[targetID] {
+			// Skip duplicates within this document.
+			continue
+		}
+		seen[targetID] = true
+
+		edge := &domain.Edge{
+			SourcePageID: pageID,
+			TargetPageID: targetID,
+			EdgeType:     "reference",
+			CreatedBy:    createdBy,
+		}
+		if _, err := s.edges.Create(ctx, edge); err != nil && !errors.Is(err, domain.ErrConflict) {
+			// Non-fatal: best-effort edge creation.
+			_ = err
+		}
+	}
+}
+
+// extractLinkTargets recursively walks a ProseMirror JSON node tree and returns
+// all UUIDs found in link mark href attributes.
+func extractLinkTargets(node map[string]any) []uuid.UUID {
+	var out []uuid.UUID
+
+	// Check if this node is a text node with link marks.
+	if nodeType, _ := node["type"].(string); nodeType == "text" {
+		marks, _ := node["marks"].([]any)
+		for _, m := range marks {
+			mark, ok := m.(map[string]any)
+			if !ok {
+				continue
+			}
+			if mark["type"] != "link" {
+				continue
+			}
+			attrs, _ := mark["attrs"].(map[string]any)
+			href, _ := attrs["href"].(string)
+			if href == "" {
+				continue
+			}
+			// Extract all UUIDs from the href (handles /pages/UUID and bare UUID).
+			for _, raw := range uuidRe.FindAllString(strings.ToLower(href), -1) {
+				if id, err := uuid.Parse(raw); err == nil {
+					out = append(out, id)
+				}
+			}
+		}
+	}
+
+	// Recurse into child content nodes.
+	children, _ := node["content"].([]any)
+	for _, child := range children {
+		if childMap, ok := child.(map[string]any); ok {
+			out = append(out, extractLinkTargets(childMap)...)
+		}
+	}
+
+	return out
 }
 
 // GetByID returns a page with its full content.
