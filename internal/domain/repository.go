@@ -49,6 +49,11 @@ type FreshnessRepository interface {
 	Create(ctx context.Context, f *Freshness) (*Freshness, error)
 	Update(ctx context.Context, f *Freshness) (*Freshness, error)
 	ListStale(ctx context.Context, threshold float64, limit int) ([]*Freshness, error)
+	// ListNeedingDecay returns all pages whose next_review_at is in the past,
+	// ordered by next_review_at ASC so the most-overdue pages are processed first.
+	ListNeedingDecay(ctx context.Context, limit int) ([]*Freshness, error)
+	// GetByPageIDs batch-fetches freshness records for a set of page IDs.
+	GetByPageIDs(ctx context.Context, pageIDs []uuid.UUID) ([]*Freshness, error)
 	Dashboard(ctx context.Context, userID string, status string, sort string, cursor string, limit int) ([]*Freshness, int, string, error)
 }
 

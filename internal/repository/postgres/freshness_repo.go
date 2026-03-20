@@ -101,6 +101,67 @@ func (r *FreshnessRepo) ListStale(ctx context.Context, threshold float64, limit 
 	return out, mapError(rows.Err())
 }
 
+// ListNeedingDecay returns pages whose next_review_at has passed, ordered by the
+// most overdue first. It is used by the decay worker so that all pages — not just
+// those already stale — receive periodic score updates.
+func (r *FreshnessRepo) ListNeedingDecay(ctx context.Context, limit int) ([]*domain.Freshness, error) {
+	const q = `
+		SELECT id, page_id, owner_id, freshness_score, review_interval_days, decay_rate,
+		       last_reviewed_at, next_review_at, last_verified_at, last_verified_by,
+		       status, created_at, updated_at
+		FROM page_freshness
+		WHERE next_review_at < NOW()
+		ORDER BY next_review_at ASC
+		LIMIT $1`
+	rows, err := r.db.Pool.Query(ctx, q, limit)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+
+	var out []*domain.Freshness
+	for rows.Next() {
+		f, err := scanFreshness(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, mapError(rows.Err())
+}
+
+// GetByPageIDs batch-fetches freshness records for a set of page IDs. Any page
+// that has no freshness record is simply absent from the returned slice.
+func (r *FreshnessRepo) GetByPageIDs(ctx context.Context, pageIDs []uuid.UUID) ([]*domain.Freshness, error) {
+	if len(pageIDs) == 0 {
+		return nil, nil
+	}
+
+	const q = `
+		SELECT id, page_id, owner_id, freshness_score, review_interval_days, decay_rate,
+		       last_reviewed_at, next_review_at, last_verified_at, last_verified_by,
+		       status, created_at, updated_at
+		FROM page_freshness
+		WHERE page_id = ANY($1)`
+
+	// pgx accepts a []uuid.UUID directly via the pgtype codec.
+	rows, err := r.db.Pool.Query(ctx, q, pageIDs)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+
+	var out []*domain.Freshness
+	for rows.Next() {
+		f, err := scanFreshness(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, mapError(rows.Err())
+}
+
 func (r *FreshnessRepo) Dashboard(ctx context.Context, userID string, status string, sort string, cursor string, limit int) ([]*domain.Freshness, int, string, error) {
 	// Simplified implementation — returns recent freshness records.
 	const q = `
