@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_quill/flutter_quill.dart';
 import 'package:go_router/go_router.dart';
 import '../providers/page_provider.dart';
 import '../providers/space_provider.dart';
@@ -10,9 +11,20 @@ import '../models/page.dart';
 import '../models/freshness.dart';
 import '../models/tag.dart';
 import '../widgets/freshness_badge.dart';
-import '../widgets/editor_toolbar.dart';
 import '../widgets/search_bar.dart' as kb;
 import '../services/api_service.dart';
+import '../utils/quill_prosemirror.dart';
+
+// ---------------------------------------------------------------------------
+// Forest dark theme colours used throughout the editor.
+// ---------------------------------------------------------------------------
+const _kEditorBg = Color(0xFF161D14);
+const _kEditorText = Color(0xFFD0E0C4);
+const _kEditorSelection = Color(0xFF3A5030);
+const _kToolbarBg = Color(0xFF1E2A1A);
+const _kToolbarIcon = Color(0xFF9BBF7E);
+const _kToolbarIconActive = Color(0xFF7AAB60);
+const _kBorderColor = Color(0xFF2E3D28);
 
 class PageEditorScreen extends ConsumerStatefulWidget {
   final String pageId;
@@ -25,16 +37,17 @@ class PageEditorScreen extends ConsumerStatefulWidget {
 
 class _PageEditorScreenState extends ConsumerState<PageEditorScreen> {
   late final TextEditingController _titleCtrl;
-  late final TextEditingController _contentCtrl;
+  late final QuillController _quillCtrl;
+  final FocusNode _editorFocus = FocusNode();
   Timer? _autoSaveTimer;
   bool _sidebarOpen = true;
-  bool _titleEditMode = false;
+  bool _contentLoaded = false;
 
   @override
   void initState() {
     super.initState();
     _titleCtrl = TextEditingController();
-    _contentCtrl = TextEditingController();
+    _quillCtrl = QuillController.basic();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(pageDetailProvider(widget.pageId).notifier).load();
     });
@@ -44,7 +57,8 @@ class _PageEditorScreenState extends ConsumerState<PageEditorScreen> {
   void dispose() {
     _autoSaveTimer?.cancel();
     _titleCtrl.dispose();
-    _contentCtrl.dispose();
+    _quillCtrl.dispose();
+    _editorFocus.dispose();
     super.dispose();
   }
 
@@ -52,8 +66,15 @@ class _PageEditorScreenState extends ConsumerState<PageEditorScreen> {
     if (_titleCtrl.text.isEmpty) {
       _titleCtrl.text = page.title;
     }
-    if (_contentCtrl.text.isEmpty) {
-      _contentCtrl.text = page.contentText;
+    if (!_contentLoaded) {
+      _contentLoaded = true;
+      final delta = page.content != null
+          ? markdownToDeltaFromProseContent(page.content!)
+          : Delta()
+        ..insert('\n');
+      _quillCtrl.document = Document.fromDelta(delta);
+      // Listen for content changes to trigger auto-save.
+      _quillCtrl.document.changes.listen((_) => _scheduleAutoSave());
     }
   }
 
@@ -66,42 +87,8 @@ class _PageEditorScreenState extends ConsumerState<PageEditorScreen> {
     final title = _titleCtrl.text.trim();
     if (title.isEmpty) return;
 
-    // Build simple content from plain text
-    final lines = _contentCtrl.text.split('\n');
-    final contentNodes = lines.map((line) {
-      if (line.startsWith('# ')) {
-        return {
-          'type': 'heading',
-          'attrs': {'level': 1},
-          'content': [
-            {'type': 'text', 'text': line.substring(2)}
-          ],
-        };
-      } else if (line.startsWith('## ')) {
-        return {
-          'type': 'heading',
-          'attrs': {'level': 2},
-          'content': [
-            {'type': 'text', 'text': line.substring(3)}
-          ],
-        };
-      } else if (line.startsWith('### ')) {
-        return {
-          'type': 'heading',
-          'attrs': {'level': 3},
-          'content': [
-            {'type': 'text', 'text': line.substring(4)}
-          ],
-        };
-      } else {
-        return {
-          'type': 'paragraph',
-          'content': [
-            {'type': 'text', 'text': line}
-          ],
-        };
-      }
-    }).toList();
+    final delta = _quillCtrl.document.toDelta();
+    final contentNodes = deltaToProseNodes(delta);
 
     await ref.read(pageDetailProvider(widget.pageId).notifier).save(
           title: title,
@@ -114,9 +101,12 @@ class _PageEditorScreenState extends ConsumerState<PageEditorScreen> {
     final pageState = ref.watch(pageDetailProvider(widget.pageId));
     final page = pageState.page;
 
-    // Sync controller when page first loads
-    if (page != null && _titleCtrl.text.isEmpty) {
-      _onPageLoaded(page);
+    // Sync controllers when page first loads.
+    if (page != null && !_contentLoaded) {
+      // Schedule after current build frame.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _onPageLoaded(page);
+      });
     }
 
     return KeyboardListener(
@@ -174,8 +164,8 @@ class _PageEditorScreenState extends ConsumerState<PageEditorScreen> {
                 child: Center(
                   child: Text(
                     'Saved',
-                    style:
-                        TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 12),
+                    style: TextStyle(
+                        color: Colors.white.withOpacity(0.8), fontSize: 12),
                   ),
                 ),
               ),
@@ -200,7 +190,8 @@ class _PageEditorScreenState extends ConsumerState<PageEditorScreen> {
                 page: page,
                 pageState: pageState,
                 titleCtrl: _titleCtrl,
-                contentCtrl: _contentCtrl,
+                quillCtrl: _quillCtrl,
+                editorFocus: _editorFocus,
                 sidebarOpen: _sidebarOpen,
                 onSave: _save,
                 onScheduleSave: _scheduleAutoSave,
@@ -211,11 +202,16 @@ class _PageEditorScreenState extends ConsumerState<PageEditorScreen> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Editor body — holds the title field and the Quill editor + toolbar.
+// ---------------------------------------------------------------------------
+
 class _EditorBody extends ConsumerWidget {
   final PageDetail? page;
   final PageDetailState pageState;
   final TextEditingController titleCtrl;
-  final TextEditingController contentCtrl;
+  final QuillController quillCtrl;
+  final FocusNode editorFocus;
   final bool sidebarOpen;
   final VoidCallback onSave;
   final VoidCallback onScheduleSave;
@@ -225,7 +221,8 @@ class _EditorBody extends ConsumerWidget {
     required this.page,
     required this.pageState,
     required this.titleCtrl,
-    required this.contentCtrl,
+    required this.quillCtrl,
+    required this.editorFocus,
     required this.sidebarOpen,
     required this.onSave,
     required this.onScheduleSave,
@@ -236,35 +233,15 @@ class _EditorBody extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     return Row(
       children: [
-        // Editor area
+        // Editor area.
         Expanded(
           child: Column(
             children: [
-              // Breadcrumb
+              // Breadcrumb.
               if (page != null) _Breadcrumb(page: page!),
-              // Toolbar
-              EditorToolbar(
-                onBold: () {
-                  // placeholder: wrap selection with **
-                },
-                onItalic: () {},
-                onCode: () {},
-                onH1: () {
-                  final pos = contentCtrl.selection.baseOffset;
-                  if (pos >= 0) {
-                    final text = contentCtrl.text;
-                    final lineStart = text.lastIndexOf('\n', pos - 1) + 1;
-                    contentCtrl.text = text.substring(0, lineStart) +
-                        '# ' +
-                        text.substring(lineStart);
-                  }
-                },
-                onH2: () {},
-                onSave: onSave,
-              ),
-              // Title field
+              // Title field.
               Padding(
-                padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+                padding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
                 child: TextField(
                   controller: titleCtrl,
                   decoration: const InputDecoration(
@@ -277,30 +254,20 @@ class _EditorBody extends ConsumerWidget {
                   onChanged: (_) => onScheduleSave(),
                 ),
               ),
-              // Content editor (plain text placeholder)
+              // Rich text editor.
               Expanded(
                 child: Padding(
-                  padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
-                  child: TextField(
-                    controller: contentCtrl,
-                    decoration: const InputDecoration(
-                      border: InputBorder.none,
-                      hintText:
-                          'Start writing... (Markdown-style: # H1, ## H2, etc.)',
-                    ),
-                    maxLines: null,
-                    expands: true,
-                    style: const TextStyle(
-                        fontSize: 15, height: 1.6, fontFamily: 'monospace'),
-                    onChanged: (_) => onScheduleSave(),
-                    keyboardType: TextInputType.multiline,
+                  padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                  child: _QuillEditor(
+                    controller: quillCtrl,
+                    focusNode: editorFocus,
                   ),
                 ),
               ),
             ],
           ),
         ),
-        // Metadata sidebar
+        // Metadata sidebar.
         if (sidebarOpen && page != null)
           SizedBox(
             width: 280,
@@ -310,6 +277,298 @@ class _EditorBody extends ConsumerWidget {
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// Quill editor widget — toolbar + editor area, forest dark themed.
+// ---------------------------------------------------------------------------
+
+class _QuillEditor extends StatelessWidget {
+  final QuillController controller;
+  final FocusNode focusNode;
+
+  const _QuillEditor({
+    required this.controller,
+    required this.focusNode,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: _kEditorBg,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: _kBorderColor),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        children: [
+          // Header bar.
+          _EditorHeader(),
+          // Toolbar.
+          _buildToolbar(context),
+          const Divider(height: 1, color: _kBorderColor),
+          // Editor area.
+          Expanded(
+            child: _buildEditor(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildToolbar(BuildContext context) {
+    return Container(
+      color: _kToolbarBg,
+      child: QuillSimpleToolbar(
+        controller: controller,
+        configurations: QuillSimpleToolbarConfigurations(
+          showFontFamily: false,
+          showFontSize: false,
+          showBackgroundColorButton: false,
+          showColorButton: false,
+          showAlignmentButtons: false,
+          showIndent: false,
+          showDirection: false,
+          showSearchButton: false,
+          showSubscript: false,
+          showSuperscript: false,
+          showUnderLineButton: false,
+          showStrikeThrough: false,
+          showQuote: false,
+          showClipboardCut: false,
+          showClipboardCopy: false,
+          showClipboardPaste: false,
+          showClearFormat: false,
+          showSmallButton: false,
+          showDividers: true,
+          showBoldButton: true,
+          showItalicButton: true,
+          showInlineCode: true,
+          showHeaderStyle: true,
+          showListNumbers: true,
+          showListBullets: true,
+          showCodeBlock: true,
+          showLink: true,
+          showUndo: true,
+          showRedo: true,
+          toolbarIconAlignment: WrapAlignment.start,
+          toolbarSectionSpacing: 4,
+          iconTheme: QuillIconTheme(
+            iconUnselectedColor: _kToolbarIcon,
+            iconSelectedColor: _kToolbarIconActive,
+            iconUnselectedFillColor: _kToolbarBg,
+            iconSelectedFillColor: _kEditorSelection,
+            borderRadius: 4,
+          ),
+          buttonOptions: QuillSimpleToolbarButtonOptions(
+            base: QuillToolbarBaseButtonOptions(
+              iconSize: 18,
+              iconTheme: QuillIconTheme(
+                iconUnselectedColor: _kToolbarIcon,
+                iconSelectedColor: _kToolbarIconActive,
+                iconUnselectedFillColor: _kToolbarBg,
+                iconSelectedFillColor: _kEditorSelection,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEditor() {
+    return QuillEditor(
+      controller: controller,
+      focusNode: focusNode,
+      configurations: QuillEditorConfigurations(
+        scrollController: ScrollController(),
+        padding: const EdgeInsets.all(16),
+        placeholder: 'Start writing…',
+        expands: true,
+        scrollable: true,
+        autoFocus: false,
+        isCheckBoxReadOnly: false,
+        customStyles: DefaultStyles(
+          color: _kEditorText,
+          placeHolder: DefaultTextBlockStyle(
+            TextStyle(
+              color: _kEditorText.withOpacity(0.35),
+              fontSize: 15,
+              height: 1.6,
+              fontFamily: 'monospace',
+            ),
+            HorizontalSpacing.zero,
+            VerticalSpacing.zero,
+            VerticalSpacing.zero,
+            null,
+          ),
+          paragraph: DefaultTextBlockStyle(
+            const TextStyle(
+              color: _kEditorText,
+              fontSize: 15,
+              height: 1.6,
+            ),
+            HorizontalSpacing.zero,
+            const VerticalSpacing(0, 4),
+            VerticalSpacing.zero,
+            null,
+          ),
+          h1: DefaultTextBlockStyle(
+            const TextStyle(
+              color: _kEditorText,
+              fontSize: 26,
+              fontWeight: FontWeight.bold,
+              height: 1.3,
+            ),
+            HorizontalSpacing.zero,
+            const VerticalSpacing(8, 4),
+            VerticalSpacing.zero,
+            null,
+          ),
+          h2: DefaultTextBlockStyle(
+            const TextStyle(
+              color: _kEditorText,
+              fontSize: 21,
+              fontWeight: FontWeight.bold,
+              height: 1.35,
+            ),
+            HorizontalSpacing.zero,
+            const VerticalSpacing(6, 4),
+            VerticalSpacing.zero,
+            null,
+          ),
+          h3: DefaultTextBlockStyle(
+            const TextStyle(
+              color: _kEditorText,
+              fontSize: 17,
+              fontWeight: FontWeight.w600,
+              height: 1.4,
+            ),
+            HorizontalSpacing.zero,
+            const VerticalSpacing(4, 4),
+            VerticalSpacing.zero,
+            null,
+          ),
+          bold: const TextStyle(
+            color: _kEditorText,
+            fontWeight: FontWeight.bold,
+          ),
+          italic: const TextStyle(
+            color: _kEditorText,
+            fontStyle: FontStyle.italic,
+          ),
+          small: const TextStyle(color: _kEditorText),
+          inlineCode: InlineCodeStyle(
+            style: const TextStyle(
+              color: Color(0xFFA8D890),
+              backgroundColor: Color(0xFF1F2D1A),
+              fontFamily: 'monospace',
+              fontSize: 13,
+            ),
+            header1: const TextStyle(
+              color: Color(0xFFA8D890),
+              backgroundColor: Color(0xFF1F2D1A),
+              fontFamily: 'monospace',
+              fontSize: 24,
+              fontWeight: FontWeight.bold,
+            ),
+            header2: const TextStyle(
+              color: Color(0xFFA8D890),
+              backgroundColor: Color(0xFF1F2D1A),
+              fontFamily: 'monospace',
+              fontSize: 18,
+            ),
+            header3: const TextStyle(
+              color: Color(0xFFA8D890),
+              backgroundColor: Color(0xFF1F2D1A),
+              fontFamily: 'monospace',
+              fontSize: 15,
+            ),
+          ),
+          code: DefaultTextBlockStyle(
+            const TextStyle(
+              color: Color(0xFFA8D890),
+              backgroundColor: Color(0xFF1A2416),
+              fontFamily: 'monospace',
+              fontSize: 13,
+              height: 1.5,
+            ),
+            HorizontalSpacing.zero,
+            const VerticalSpacing(8, 8),
+            VerticalSpacing.zero,
+            BoxDecoration(
+              color: const Color(0xFF1A2416),
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: _kBorderColor),
+            ),
+          ),
+          lists: DefaultListBlockStyle(
+            const TextStyle(
+              color: _kEditorText,
+              fontSize: 15,
+              height: 1.6,
+            ),
+            HorizontalSpacing.zero,
+            const VerticalSpacing(0, 2),
+            VerticalSpacing.zero,
+            null,
+            null,
+          ),
+          link: const TextStyle(
+            color: Color(0xFF7EC8A0),
+            decoration: TextDecoration.underline,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Thin header bar that sits above the toolbar — matches the forest dark style.
+class _EditorHeader extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 32,
+      color: const Color(0xFF0F1710),
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      child: Row(
+        children: [
+          const Icon(Icons.terminal, size: 14, color: _kToolbarIcon),
+          const SizedBox(width: 6),
+          Text(
+            'rich text',
+            style: TextStyle(
+              color: _kToolbarIcon.withOpacity(0.8),
+              fontSize: 12,
+              fontFamily: 'monospace',
+            ),
+          ),
+          const Spacer(),
+          // Decorative window dots.
+          _dot(const Color(0xFFFF5F57)),
+          const SizedBox(width: 4),
+          _dot(const Color(0xFFFFBD2E)),
+          const SizedBox(width: 4),
+          _dot(const Color(0xFF28CA42)),
+          const SizedBox(width: 2),
+        ],
+      ),
+    );
+  }
+
+  Widget _dot(Color color) {
+    return Container(
+      width: 10,
+      height: 10,
+      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Breadcrumb
+// ---------------------------------------------------------------------------
 
 class _Breadcrumb extends ConsumerWidget {
   final PageDetail page;
@@ -337,18 +596,25 @@ class _Breadcrumb extends ConsumerWidget {
               child: Text(
                 space.name,
                 style: TextStyle(
-                    color: Theme.of(context).colorScheme.primary, fontSize: 13),
+                    color: Theme.of(context).colorScheme.primary,
+                    fontSize: 13),
               ),
             ),
-            const Text(' > ', style: TextStyle(color: Colors.grey, fontSize: 13)),
+            const Text(' > ',
+                style: TextStyle(color: Colors.grey, fontSize: 13)),
           ],
           Text(page.title,
-              style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 13)),
+              style: const TextStyle(
+                  fontWeight: FontWeight.w500, fontSize: 13)),
         ],
       ),
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// Metadata sidebar (unchanged from original)
+// ---------------------------------------------------------------------------
 
 class _MetadataSidebar extends ConsumerStatefulWidget {
   final PageDetail page;
@@ -499,10 +765,7 @@ class _TagChip extends StatelessWidget {
         : Colors.blue;
 
     return Chip(
-      label: Text(
-        tag.name,
-        style: const TextStyle(fontSize: 12),
-      ),
+      label: Text(tag.name, style: const TextStyle(fontSize: 12)),
       backgroundColor: color.withOpacity(0.15),
       side: BorderSide(color: color.withOpacity(0.4)),
       visualDensity: VisualDensity.compact,
@@ -521,7 +784,8 @@ class _FreshnessPanel extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final freshness = page.freshness;
     if (freshness == null) {
-      return const Text('No freshness data', style: TextStyle(fontSize: 12));
+      return const Text('No freshness data',
+          style: TextStyle(fontSize: 12));
     }
 
     return Column(
@@ -530,7 +794,8 @@ class _FreshnessPanel extends ConsumerWidget {
         Row(
           children: [
             FreshnessBadge(
-                status: freshness.status, score: freshness.freshnessScore),
+                status: freshness.status,
+                score: freshness.freshnessScore),
             const Spacer(),
             Text(
               '${freshness.freshnessScore.toStringAsFixed(0)}%',
@@ -558,8 +823,8 @@ class _FreshnessPanel extends ConsumerWidget {
             label: const Text('Verify Now'),
             style: ElevatedButton.styleFrom(
               textStyle: const TextStyle(fontSize: 12),
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 12, vertical: 8),
             ),
           ),
         ),
@@ -585,10 +850,12 @@ class _MetaRow extends StatelessWidget {
       child: Row(
         children: [
           Text(label,
-              style: const TextStyle(fontSize: 12, color: Colors.grey)),
+              style:
+                  const TextStyle(fontSize: 12, color: Colors.grey)),
           const Spacer(),
           Text(value,
-              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
+              style: const TextStyle(
+                  fontSize: 12, fontWeight: FontWeight.w500)),
         ],
       ),
     );
@@ -640,14 +907,13 @@ class _GraphPanel extends ConsumerWidget {
             style: TextStyle(fontSize: 12, color: Colors.grey)),
         const SizedBox(height: 8),
         OutlinedButton.icon(
-          onPressed: () =>
-              context.push('/graph?root=$pageId'),
+          onPressed: () => context.push('/graph?root=$pageId'),
           icon: const Icon(Icons.account_tree_outlined, size: 14),
           label: const Text('Open Graph'),
           style: OutlinedButton.styleFrom(
             textStyle: const TextStyle(fontSize: 12),
-            padding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            padding: const EdgeInsets.symmetric(
+                horizontal: 12, vertical: 6),
           ),
         ),
       ],
