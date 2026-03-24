@@ -16,6 +16,8 @@ dependencies:
   json_annotation: ^4.9.0
   intl: ^0.20.2
   flutter_quill: ^11.5.0
+  graphview: ^1.2.0
+  google_fonts: ^6.2.1
 
 dev_dependencies:
   flutter_test:
